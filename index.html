@@ -245,6 +245,31 @@
     .change-badge.down { background: var(--red-dim); color: var(--red); }
     .change-badge.neutral { background: var(--surface2); color: var(--muted); }
 
+    .section-header {
+      grid-column: 1 / -1;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      padding: 4px 2px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 2px;
+    }
+
+    .etf-badge {
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+    }
+
+    .etf-card {
+      background: #1a1f32;
+      border-color: #3a4060;
+    }
+
+    .etf-card:hover { border-color: var(--accent); }
+
     .weight-bar {
       margin-top: 12px;
     }
@@ -378,6 +403,12 @@
 <div class="cards-grid" id="grid"></div>
 
 <script>
+  // ETFs tracked separately (no weight bar)
+  const ETFS = [
+    { ticker: 'SMH', name: 'VanEck Semiconductor ETF', etf: true },
+    { ticker: 'QQQ', name: 'Invesco QQQ Trust (Nasdaq-100)', etf: true },
+  ];
+
   // Top 10 SMH holdings (as of early 2025) with approximate weights
   const HOLDINGS = [
     { ticker: 'NVDA',  name: 'NVIDIA Corporation',             weight: 20.87 },
@@ -392,6 +423,7 @@
     { ticker: 'INTC',  name: 'Intel Corporation',              weight: 2.49  },
   ];
 
+  const ALL_ITEMS = [...ETFS, ...HOLDINGS];
   const MAX_WEIGHT = Math.max(...HOLDINGS.map(h => h.weight));
 
   function fmt(n, decimals = 2) {
@@ -440,12 +472,25 @@
   function buildSkeletons() {
     const grid = document.getElementById('grid');
     grid.innerHTML = '';
-    HOLDINGS.forEach((h, i) => {
+    // Insert section headers
+    grid.innerHTML += `<div class="section-header" id="section-etfs">ETFs</div>`;
+    ALL_ITEMS.forEach((h, i) => {
+      if (i === ETFS.length) {
+        grid.innerHTML += `<div class="section-header" id="section-holdings">Top 10 Holdings</div>`;
+      }
+      const rankBadge = h.etf
+        ? `<span class="rank etf-badge">ETF</span>`
+        : `<span class="rank">#${i - ETFS.length + 1}</span>`;
+      const weightSection = h.etf ? '' : `
+          <div class="weight-bar">
+            <div class="weight-text">ETF Weight: ${h.weight}%</div>
+            <div class="bar-track"><div class="bar-fill" style="width:${(h.weight / MAX_WEIGHT) * 100}%"></div></div>
+          </div>`;
       grid.innerHTML += `
-        <div class="card neutral" id="card-${h.ticker}">
+        <div class="card neutral${h.etf ? ' etf-card' : ''}" id="card-${h.ticker}">
           <div class="card-header">
             <span class="ticker">${h.ticker}</span>
-            <span class="rank">#${i + 1}</span>
+            ${rankBadge}
           </div>
           <div class="company-name">${h.name}</div>
           <div class="price-section">
@@ -460,10 +505,7 @@
             </div>
             <div class="skeleton" style="width:70px;height:26px"></div>
           </div>
-          <div class="weight-bar">
-            <div class="weight-text">ETF Weight: ${h.weight}%</div>
-            <div class="bar-track"><div class="bar-fill" style="width:${(h.weight / MAX_WEIGHT) * 100}%"></div></div>
-          </div>
+          ${weightSection}
         </div>`;
     });
   }
@@ -506,11 +548,20 @@
     const arrow = showChange > 0 ? '▲' : showChange < 0 ? '▼' : '–';
     const sign = showChange > 0 ? '+' : '';
 
-    card.className = `card ${dir}`;
+    const rankBadge = h.etf
+      ? `<span class="rank etf-badge">ETF</span>`
+      : `<span class="rank">#${i - ETFS.length + 1}</span>`;
+    const weightSection = h.etf ? '' : `
+      <div class="weight-bar">
+        <div class="weight-text">ETF Weight: ${h.weight}%</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${(h.weight / MAX_WEIGHT) * 100}%"></div></div>
+      </div>`;
+
+    card.className = `card ${dir}${h.etf ? ' etf-card' : ''}`;
     card.innerHTML = `
       <div class="card-header">
         <span class="ticker">${h.ticker}</span>
-        <span class="rank">#${i + 1}</span>
+        ${rankBadge}
       </div>
       <div class="company-name">${h.name}</div>
       <div class="price-section">
@@ -530,10 +581,7 @@
       <div style="font-size:12px;color:var(--muted);margin-top:6px">
         ${sign}${fmtPrice(showChange)} from close
       </div>
-      <div class="weight-bar">
-        <div class="weight-text">ETF Weight: ${h.weight}%</div>
-        <div class="bar-track"><div class="bar-fill" style="width:${(h.weight / MAX_WEIGHT) * 100}%"></div></div>
-      </div>`;
+      ${weightSection}`;
   }
 
   function updateSummary(quotes) {
@@ -576,7 +624,7 @@
     const status = getMarketStatus();
     updateMarketStatus(status);
 
-    const tickers = HOLDINGS.map(h => h.ticker).join(',');
+    const tickers = ALL_ITEMS.map(h => h.ticker).join(',');
     const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${tickers}&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,postMarketPrice,postMarketChange,postMarketChangePercent,preMarketPrice,preMarketChange,preMarketChangePercent,longName,shortName`;
 
     try {
@@ -593,7 +641,7 @@
       results.forEach(q => { map[q.symbol] = q; });
 
       const allQuotes = [];
-      HOLDINGS.forEach((h, i) => {
+      ALL_ITEMS.forEach((h, i) => {
         const q = map[h.ticker];
         if (q) {
           renderCard(h, i, q);
