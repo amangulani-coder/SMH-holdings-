@@ -608,6 +608,57 @@
     document.getElementById('summary-bar').style.display = 'flex';
   }
 
+  const PROXY = url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+  const FIELDS = 'regularMarketPrice,regularMarketChange,regularMarketChangePercent,postMarketPrice,postMarketChange,postMarketChangePercent,preMarketPrice,preMarketChange,preMarketChangePercent';
+
+  // Strategy 1: fetch Yahoo crumb first, then use it in the quote request
+  async function fetchViaCrumb(tickers) {
+    const crumbRes = await fetch(PROXY('https://query2.finance.yahoo.com/v1/test/getcrumb'));
+    if (!crumbRes.ok) throw new Error(`crumb ${crumbRes.status}`);
+    const crumb = (await crumbRes.text()).trim();
+    if (!crumb || crumb.length < 3) throw new Error('bad crumb');
+
+    const url = `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${tickers}&fields=${FIELDS}&crumb=${encodeURIComponent(crumb)}`;
+    const res = await fetch(PROXY(url));
+    if (!res.ok) throw new Error(`quote ${res.status}`);
+    const data = await res.json();
+    return data?.quoteResponse?.result || [];
+  }
+
+  // Strategy 2: per-symbol v8 chart API in parallel
+  async function fetchViaChartAPI() {
+    const fetches = ALL_ITEMS.map(h => {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${h.ticker}?interval=1m&range=1d&includePrePost=true`;
+      return fetch(PROXY(url))
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          const meta = data?.chart?.result?.[0]?.meta;
+          if (!meta) return null;
+          const prevClose = meta.chartPreviousClose || meta.regularMarketPrice;
+          const regChange = meta.regularMarketPrice - prevClose;
+          const postChange = meta.postMarketPrice != null ? meta.postMarketPrice - meta.regularMarketPrice : null;
+          const preChange  = meta.preMarketPrice  != null ? meta.preMarketPrice  - meta.regularMarketPrice : null;
+          return {
+            symbol: h.ticker,
+            regularMarketPrice: meta.regularMarketPrice,
+            regularMarketChange: regChange,
+            regularMarketChangePercent: prevClose ? (regChange / prevClose) * 100 : 0,
+            postMarketPrice: meta.postMarketPrice ?? null,
+            postMarketChange: postChange,
+            postMarketChangePercent: postChange != null && meta.regularMarketPrice ? (postChange / meta.regularMarketPrice) * 100 : null,
+            preMarketPrice: meta.preMarketPrice ?? null,
+            preMarketChange: preChange,
+            preMarketChangePercent: preChange != null && meta.regularMarketPrice ? (preChange / meta.regularMarketPrice) * 100 : null,
+          };
+        })
+        .catch(() => null);
+    });
+    const settled = await Promise.all(fetches);
+    const valid = settled.filter(Boolean);
+    if (valid.length === 0) throw new Error('no chart data');
+    return valid;
+  }
+
   async function loadData() {
     const btn     = document.getElementById('refresh-btn');
     const spinner = document.getElementById('spinner');
@@ -620,41 +671,34 @@
     errBanner.style.display = 'none';
 
     buildSkeletons();
-
-    const status = getMarketStatus();
-    updateMarketStatus(status);
+    updateMarketStatus(getMarketStatus());
 
     const tickers = ALL_ITEMS.map(h => h.ticker).join(',');
-    const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${tickers}&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,postMarketPrice,postMarketChange,postMarketChangePercent,preMarketPrice,preMarketChange,preMarketChangePercent,longName,shortName`;
-    const url = `https://corsproxy.io/?url=${encodeURIComponent(yahooUrl)}`;
 
     try {
-      const res = await fetch(url);
+      let results;
+      try {
+        results = await fetchViaCrumb(tickers);
+      } catch (e1) {
+        console.warn('Crumb strategy failed:', e1.message, '— trying chart API');
+        results = await fetchViaChartAPI();
+      }
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const results = data?.quoteResponse?.result || [];
-
-      // Build a map by symbol
       const map = {};
       results.forEach(q => { map[q.symbol] = q; });
 
       const allQuotes = [];
       ALL_ITEMS.forEach((h, i) => {
         const q = map[h.ticker];
-        if (q) {
-          renderCard(h, i, q);
-          allQuotes.push(q);
-        }
+        if (q) { renderCard(h, i, q); allQuotes.push(q); }
       });
 
       updateSummary(allQuotes);
-
       document.getElementById('last-updated').textContent =
         'Updated ' + new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
     } catch (err) {
-      errBanner.textContent = `Failed to load data: ${err.message}. Yahoo Finance may be blocking requests from this browser — try opening the app locally.`;
+      errBanner.textContent = `Failed to load data: ${err.message}`;
       errBanner.style.display = 'block';
       console.error(err);
     } finally {
