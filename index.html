@@ -626,61 +626,85 @@
     document.getElementById('summary-bar').style.display = 'flex';
   }
 
-  const PROXY = url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-  const FIELDS = 'regularMarketPrice,regularMarketChange,regularMarketChangePercent,postMarketPrice,postMarketChange,postMarketChangePercent,preMarketPrice,preMarketChange,preMarketChangePercent';
+  // Three proxies tried in order for every request
+  const PROXIES = [
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  ];
 
-  // Strategy 1: fetch Yahoo crumb first, then use it in the quote request
-  async function fetchViaCrumb(tickers) {
-    const crumbRes = await fetch(PROXY('https://query2.finance.yahoo.com/v1/test/getcrumb'));
-    if (!crumbRes.ok) throw new Error(`crumb ${crumbRes.status}`);
-    const crumb = (await crumbRes.text()).trim();
-    if (!crumb || crumb.length < 3) throw new Error('bad crumb');
-
-    const url = `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${tickers}&fields=${FIELDS}&crumb=${encodeURIComponent(crumb)}`;
-    const res = await fetch(PROXY(url));
-    if (!res.ok) throw new Error(`quote ${res.status}`);
-    const data = await res.json();
-    return data?.quoteResponse?.result || [];
+  // Fetch via proxy, skip if response is HTML (Yahoo consent/login page)
+  async function proxyFetch(yahooUrl, asText = false, timeoutMs = 8000) {
+    let lastErr = 'no proxies attempted';
+    for (const proxify of PROXIES) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+      try {
+        const res = await fetch(proxify(yahooUrl), { signal: ctrl.signal });
+        clearTimeout(timer);
+        const text = await res.text();
+        const t = text.trim();
+        // Reject HTML responses (Yahoo consent/login pages)
+        if (t.startsWith('<')) { lastErr = 'got HTML (consent/login page)'; continue; }
+        if (asText) return t;
+        if (!t.startsWith('{') && !t.startsWith('[')) { lastErr = 'unexpected response: ' + t.slice(0, 40); continue; }
+        return JSON.parse(t);
+      } catch (e) {
+        clearTimeout(timer);
+        lastErr = e.message;
+      }
+    }
+    throw new Error(lastErr);
   }
 
-  // Strategy 2: per-symbol v8 chart API in parallel
+  const FIELDS = 'regularMarketPrice,regularMarketChange,regularMarketChangePercent,postMarketPrice,postMarketChange,postMarketChangePercent,preMarketPrice,preMarketChange,preMarketChangePercent';
+
+  // Strategy 1: crumb-based v7 quote API
+  async function fetchViaCrumb(tickers) {
+    const crumb = await proxyFetch('https://query2.finance.yahoo.com/v1/test/getcrumb', true);
+    if (!crumb || crumb.length < 3 || crumb.startsWith('<')) throw new Error('bad crumb: ' + crumb.slice(0, 30));
+    const url = `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${tickers}&fields=${FIELDS}&crumb=${encodeURIComponent(crumb)}`;
+    const data = await proxyFetch(url);
+    const results = data?.quoteResponse?.result || [];
+    if (results.length === 0) throw new Error('empty quote results');
+    return results;
+  }
+
+  // Strategy 2: per-symbol v8 chart API (parallel, all proxies per symbol)
   async function fetchViaChartAPI() {
-    const fetches = ALL_ITEMS.map(h => {
+    const fetches = ALL_ITEMS.map(async h => {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${h.ticker}?interval=1m&range=1d&includePrePost=true`;
-      return fetch(PROXY(url))
-        .then(r => r.ok ? r.json() : null)
-        .then(data => {
-          const meta = data?.chart?.result?.[0]?.meta;
-          if (!meta) return null;
-          const prevClose = meta.chartPreviousClose || meta.regularMarketPrice;
-          const regChange = meta.regularMarketPrice - prevClose;
-          const postChange = meta.postMarketPrice != null ? meta.postMarketPrice - meta.regularMarketPrice : null;
-          const preChange  = meta.preMarketPrice  != null ? meta.preMarketPrice  - meta.regularMarketPrice : null;
-          return {
-            symbol: h.ticker,
-            regularMarketPrice: meta.regularMarketPrice,
-            regularMarketChange: regChange,
-            regularMarketChangePercent: prevClose ? (regChange / prevClose) * 100 : 0,
-            postMarketPrice: meta.postMarketPrice ?? null,
-            postMarketChange: postChange,
-            postMarketChangePercent: postChange != null && meta.regularMarketPrice ? (postChange / meta.regularMarketPrice) * 100 : null,
-            preMarketPrice: meta.preMarketPrice ?? null,
-            preMarketChange: preChange,
-            preMarketChangePercent: preChange != null && meta.regularMarketPrice ? (preChange / meta.regularMarketPrice) * 100 : null,
-          };
-        })
-        .catch(() => null);
+      try {
+        const data = await proxyFetch(url);
+        const meta = data?.chart?.result?.[0]?.meta;
+        if (!meta?.regularMarketPrice) return null;
+        const prevClose = meta.chartPreviousClose || meta.regularMarketPrice;
+        const regChange = meta.regularMarketPrice - prevClose;
+        const postChange = meta.postMarketPrice != null ? meta.postMarketPrice - meta.regularMarketPrice : null;
+        const preChange  = meta.preMarketPrice  != null ? meta.preMarketPrice  - meta.regularMarketPrice : null;
+        return {
+          symbol: h.ticker,
+          regularMarketPrice: meta.regularMarketPrice,
+          regularMarketChange: regChange,
+          regularMarketChangePercent: prevClose ? (regChange / prevClose) * 100 : 0,
+          postMarketPrice: meta.postMarketPrice ?? null,
+          postMarketChange: postChange,
+          postMarketChangePercent: postChange != null ? (postChange / meta.regularMarketPrice) * 100 : null,
+          preMarketPrice: meta.preMarketPrice ?? null,
+          preMarketChange: preChange,
+          preMarketChangePercent: preChange != null ? (preChange / meta.regularMarketPrice) * 100 : null,
+        };
+      } catch (e) { return null; }
     });
-    const settled = await Promise.all(fetches);
-    const valid = settled.filter(Boolean);
-    if (valid.length === 0) throw new Error('no chart data');
+    const valid = (await Promise.all(fetches)).filter(Boolean);
+    if (valid.length === 0) throw new Error('all chart requests failed across all proxies');
     return valid;
   }
 
   async function loadData() {
-    const btn     = document.getElementById('refresh-btn');
-    const spinner = document.getElementById('spinner');
-    const label   = document.getElementById('refresh-label');
+    const btn       = document.getElementById('refresh-btn');
+    const spinner   = document.getElementById('spinner');
+    const label     = document.getElementById('refresh-label');
     const errBanner = document.getElementById('error-banner');
 
     btn.disabled = true;
@@ -697,10 +721,13 @@
       let results;
       try {
         results = await fetchViaCrumb(tickers);
-        if (!results || results.length === 0) throw new Error('empty results from crumb');
       } catch (e1) {
-        console.warn('Crumb strategy failed:', e1.message, '— trying chart API');
-        results = await fetchViaChartAPI();
+        console.warn('Crumb failed:', e1.message);
+        try {
+          results = await fetchViaChartAPI();
+        } catch (e2) {
+          throw new Error(`Crumb: ${e1.message} | Chart: ${e2.message}`);
+        }
       }
 
       const map = {};
@@ -717,7 +744,7 @@
         'Updated ' + new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
     } catch (err) {
-      errBanner.textContent = `Failed to load data: ${err.message}`;
+      errBanner.textContent = `Failed to load data — ${err.message}`;
       errBanner.style.display = 'block';
       console.error(err);
     } finally {
@@ -727,7 +754,6 @@
     }
   }
 
-  // Auto-refresh every 60 seconds
   loadData();
   setInterval(loadData, 60000);
 </script>
