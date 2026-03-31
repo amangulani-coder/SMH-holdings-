@@ -193,6 +193,13 @@
       margin-bottom: 10px;
     }
 
+    .price-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
     .price-label {
       font-size: 11px;
       color: var(--muted);
@@ -548,6 +555,13 @@
     const arrow = showChange > 0 ? '▲' : showChange < 0 ? '▼' : '–';
     const sign = showChange > 0 ? '+' : '';
 
+    // Regular close day change
+    const regChange = q.regularMarketChange;
+    const regChangePct = q.regularMarketChangePercent;
+    const regDir = regChange > 0 ? 'up' : regChange < 0 ? 'down' : 'neutral';
+    const regSign = regChange > 0 ? '+' : '';
+    const regArrow = regChange > 0 ? '▲' : regChange < 0 ? '▼' : '–';
+
     const rankBadge = h.etf
       ? `<span class="rank etf-badge">ETF</span>`
       : `<span class="rank">#${i - ETFS.length + 1}</span>`;
@@ -566,20 +580,24 @@
       <div class="company-name">${h.name}</div>
       <div class="price-section">
         <div class="price-label">Regular Close</div>
-        <div class="regular-price">${fmtPrice(regularPrice)}</div>
+        <div class="price-row">
+          <span class="regular-price">${fmtPrice(regularPrice)}</span>
+          <span class="change-badge ${regDir}" style="font-size:12px;padding:2px 6px">
+            ${regArrow} ${regSign}${fmt(regChangePct, 2)}%
+          </span>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">${regSign}${fmtPrice(regChange)} today</div>
       </div>
       <hr class="divider"/>
       <div class="ah-section">
         <div>
           <div class="ah-label">${sessionLabel}</div>
           <div class="ah-price">${fmtPrice(showPrice)}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">${sign}${fmtPrice(showChange)} from close</div>
         </div>
         <span class="change-badge ${dir}">
           ${arrow} ${sign}${fmt(showChangePct, 2)}%
         </span>
-      </div>
-      <div style="font-size:12px;color:var(--muted);margin-top:6px">
-        ${sign}${fmtPrice(showChange)} from close
       </div>
       ${weightSection}`;
   }
@@ -679,6 +697,7 @@
       let results;
       try {
         results = await fetchViaCrumb(tickers);
+        if (!results || results.length === 0) throw new Error('empty results from crumb');
       } catch (e1) {
         console.warn('Crumb strategy failed:', e1.message, '— trying chart API');
         results = await fetchViaChartAPI();
