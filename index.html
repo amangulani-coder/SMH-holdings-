@@ -534,6 +534,7 @@
     const status = getMarketStatus();
     let showPrice, showChange, showChangePct, sessionLabel;
 
+    let noAHData = false;
     if (status === 'pre' && prePrice != null) {
       showPrice = prePrice;
       showChange = preChange;
@@ -545,15 +546,13 @@
       showChangePct = ahChangePct;
       sessionLabel = 'After Hours';
     } else {
-      showPrice = regularPrice;
-      showChange = q.regularMarketChange;
-      showChangePct = q.regularMarketChangePercent;
-      sessionLabel = 'Regular Close';
+      noAHData = true;
+      sessionLabel = status === 'pre' ? 'Pre-Market' : 'After Hours';
     }
 
-    const dir = showChange > 0 ? 'up' : showChange < 0 ? 'down' : 'neutral';
-    const arrow = showChange > 0 ? '▲' : showChange < 0 ? '▼' : '–';
-    const sign = showChange > 0 ? '+' : '';
+    const dir = noAHData ? 'neutral' : (showChange > 0 ? 'up' : showChange < 0 ? 'down' : 'neutral');
+    const arrow = noAHData ? '–' : (showChange > 0 ? '▲' : showChange < 0 ? '▼' : '–');
+    const sign = noAHData ? '' : (showChange > 0 ? '+' : '');
 
     // Regular close day change
     const regChange = q.regularMarketChange;
@@ -571,7 +570,8 @@
         <div class="bar-track"><div class="bar-fill" style="width:${(h.weight / MAX_WEIGHT) * 100}%"></div></div>
       </div>`;
 
-    card.className = `card ${dir}${h.etf ? ' etf-card' : ''}`;
+    const cardDir = noAHData ? regDir : dir;
+    card.className = `card ${cardDir}${h.etf ? ' etf-card' : ''}`;
     card.innerHTML = `
       <div class="card-header">
         <span class="ticker">${h.ticker}</span>
@@ -590,6 +590,13 @@
       </div>
       <hr class="divider"/>
       <div class="ah-section">
+        ${noAHData ? `
+        <div>
+          <div class="ah-label">${sessionLabel}</div>
+          <div class="ah-price" style="color:var(--muted);font-size:14px">No data yet</div>
+        </div>
+        <span class="change-badge neutral">– –%</span>
+        ` : `
         <div>
           <div class="ah-label">${sessionLabel}</div>
           <div class="ah-price">${fmtPrice(showPrice)}</div>
@@ -598,6 +605,7 @@
         <span class="change-badge ${dir}">
           ${arrow} ${sign}${fmt(showChangePct, 2)}%
         </span>
+        `}
       </div>
       ${weightSection}`;
   }
@@ -676,21 +684,56 @@
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${h.ticker}?interval=1m&range=1d&includePrePost=true`;
       try {
         const data = await proxyFetch(url);
-        const meta = data?.chart?.result?.[0]?.meta;
+        const result = data?.chart?.result?.[0];
+        const meta = result?.meta;
         if (!meta?.regularMarketPrice) return null;
         const prevClose = meta.chartPreviousClose || meta.regularMarketPrice;
         const regChange = meta.regularMarketPrice - prevClose;
-        const postChange = meta.postMarketPrice != null ? meta.postMarketPrice - meta.regularMarketPrice : null;
-        const preChange  = meta.preMarketPrice  != null ? meta.preMarketPrice  - meta.regularMarketPrice : null;
+
+        // Try to get post-market price from meta first, then fall back to OHLCV series
+        let postPrice = meta.postMarketPrice ?? null;
+        if (postPrice == null && result?.timestamp && result?.indicators?.quote?.[0]?.close) {
+          const ts = result.timestamp;
+          const closes = result.indicators.quote[0].close;
+          const postPeriod = meta.tradingPeriods?.post?.[0]?.[0];
+          if (postPeriod) {
+            for (let j = ts.length - 1; j >= 0; j--) {
+              if (ts[j] >= postPeriod.start && ts[j] <= postPeriod.end && closes[j] != null) {
+                postPrice = closes[j];
+                break;
+              }
+            }
+          }
+        }
+
+        // Try to get pre-market price from meta first, then fall back to OHLCV series
+        let prePrice = meta.preMarketPrice ?? null;
+        if (prePrice == null && result?.timestamp && result?.indicators?.quote?.[0]?.close) {
+          const ts = result.timestamp;
+          const closes = result.indicators.quote[0].close;
+          const prePeriod = meta.tradingPeriods?.pre?.[0]?.[0];
+          if (prePeriod) {
+            for (let j = ts.length - 1; j >= 0; j--) {
+              if (ts[j] >= prePeriod.start && ts[j] <= prePeriod.end && closes[j] != null) {
+                prePrice = closes[j];
+                break;
+              }
+            }
+          }
+        }
+
+        const postChange = postPrice != null ? postPrice - meta.regularMarketPrice : null;
+        const preChange  = prePrice  != null ? prePrice  - meta.regularMarketPrice : null;
+
         return {
           symbol: h.ticker,
           regularMarketPrice: meta.regularMarketPrice,
           regularMarketChange: regChange,
           regularMarketChangePercent: prevClose ? (regChange / prevClose) * 100 : 0,
-          postMarketPrice: meta.postMarketPrice ?? null,
+          postMarketPrice: postPrice,
           postMarketChange: postChange,
           postMarketChangePercent: postChange != null ? (postChange / meta.regularMarketPrice) * 100 : null,
-          preMarketPrice: meta.preMarketPrice ?? null,
+          preMarketPrice: prePrice,
           preMarketChange: preChange,
           preMarketChangePercent: preChange != null ? (preChange / meta.regularMarketPrice) * 100 : null,
         };
