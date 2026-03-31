@@ -353,6 +353,77 @@
       font-weight: 600;
     }
 
+    .range52 {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+
+    .range52-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+
+    .range52-title {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+    }
+
+    .range52-badge {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--red);
+    }
+
+    .range52-badge.at-high { color: var(--green); }
+
+    .range52-track {
+      position: relative;
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      margin-bottom: 6px;
+    }
+
+    .range52-fill {
+      position: absolute;
+      left: 0;
+      top: 0;
+      height: 100%;
+      background: var(--accent);
+      border-radius: 2px;
+    }
+
+    .range52-dot {
+      position: absolute;
+      top: 50%;
+      width: 13px;
+      height: 13px;
+      background: #3b82f6;
+      border: 2px solid var(--surface);
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      box-shadow: 0 0 0 1px #3b82f6;
+    }
+
+    .range52-ends {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .range52-peak-date {
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 4px;
+      text-align: right;
+    }
+
     @media (max-width: 500px) {
       .cards-grid { grid-template-columns: 1fr; }
       h1 { font-size: 17px; }
@@ -570,6 +641,36 @@
         <div class="bar-track"><div class="bar-fill" style="width:${(h.weight / MAX_WEIGHT) * 100}%"></div></div>
       </div>`;
 
+    // 52-week range
+    const high52 = q.fiftyTwoWeekHigh ?? null;
+    const low52  = q.fiftyTwoWeekLow  ?? null;
+    const pct52  = (high52 != null && low52 != null && high52 !== low52)
+      ? Math.min(100, Math.max(0, ((q.regularMarketPrice - low52) / (high52 - low52)) * 100))
+      : null;
+    const fromHighPct = q.fiftyTwoWeekHighChangePercent ?? null;
+    const peakDateStr = q.fiftyTwoWeekHighDate
+      ? q.fiftyTwoWeekHighDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+      : null;
+    const atHigh = fromHighPct != null && fromHighPct >= -0.5;
+    const rangeSection = pct52 != null ? `
+      <div class="range52">
+        <div class="range52-header">
+          <span class="range52-title">52-Week Range</span>
+          ${fromHighPct != null ? `<span class="range52-badge${atHigh ? ' at-high' : ''}">
+            ${atHigh ? '▲ At 52-wk high' : '▼ ' + fmt(Math.abs(fromHighPct), 1) + '% from peak'}
+          </span>` : ''}
+        </div>
+        <div class="range52-track">
+          <div class="range52-fill" style="width:${pct52}%"></div>
+          <div class="range52-dot" style="left:${pct52}%"></div>
+        </div>
+        <div class="range52-ends">
+          <span>${fmtPrice(low52)}</span>
+          <span>${fmtPrice(high52)}</span>
+        </div>
+        ${peakDateStr ? `<div class="range52-peak-date">Peaked ${peakDateStr}</div>` : ''}
+      </div>` : '';
+
     const cardDir = noAHData ? regDir : dir;
     card.className = `card ${cardDir}${h.etf ? ' etf-card' : ''}`;
     card.innerHTML = `
@@ -607,7 +708,8 @@
         </span>
         `}
       </div>
-      ${weightSection}`;
+      ${weightSection}
+      ${rangeSection}`;
   }
 
   function updateSummary(quotes) {
@@ -665,7 +767,30 @@
     throw new Error(lastErr);
   }
 
-  const FIELDS = 'regularMarketPrice,regularMarketChange,regularMarketChangePercent,postMarketPrice,postMarketChange,postMarketChangePercent,preMarketPrice,preMarketChange,preMarketChangePercent';
+  // Fetch 52-week peak date per symbol using 1-year daily chart data
+  async function fetchPeakDates(tickers) {
+    const peakMap = {};
+    await Promise.all(tickers.map(async ticker => {
+      try {
+        const data = await proxyFetch(
+          `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=1y`
+        );
+        const r = data?.chart?.result?.[0];
+        if (!r?.timestamp) return;
+        const ts = r.timestamp;
+        const highs = r.indicators?.quote?.[0]?.high;
+        if (!highs) return;
+        let maxVal = -Infinity, maxIdx = -1;
+        for (let i = 0; i < highs.length; i++) {
+          if (highs[i] != null && highs[i] > maxVal) { maxVal = highs[i]; maxIdx = i; }
+        }
+        if (maxIdx >= 0) peakMap[ticker] = { high: maxVal, date: new Date(ts[maxIdx] * 1000) };
+      } catch(e) {}
+    }));
+    return peakMap;
+  }
+
+  const FIELDS = 'regularMarketPrice,regularMarketChange,regularMarketChangePercent,postMarketPrice,postMarketChange,postMarketChangePercent,preMarketPrice,preMarketChange,preMarketChangePercent,fiftyTwoWeekHigh,fiftyTwoWeekLow,fiftyTwoWeekHighChange,fiftyTwoWeekHighChangePercent';
 
   // Strategy 1: crumb-based v7 quote API
   async function fetchViaCrumb(tickers) {
@@ -678,10 +803,11 @@
     return results;
   }
 
-  // Strategy 2: per-symbol v8 chart API (parallel, all proxies per symbol)
+  // Strategy 2: per-symbol v8 chart API using 1-year daily data
+  // Gets current prices, post/pre-market, and 52-week high/low/peak-date in one request
   async function fetchViaChartAPI() {
     const fetches = ALL_ITEMS.map(async h => {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${h.ticker}?interval=1m&range=1d&includePrePost=true`;
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${h.ticker}?interval=1d&range=1y&includePrePost=true`;
       try {
         const data = await proxyFetch(url);
         const result = data?.chart?.result?.[0];
@@ -690,40 +816,30 @@
         const prevClose = meta.chartPreviousClose || meta.regularMarketPrice;
         const regChange = meta.regularMarketPrice - prevClose;
 
-        // Try to get post-market price from meta first, then fall back to OHLCV series
-        let postPrice = meta.postMarketPrice ?? null;
-        if (postPrice == null && result?.timestamp && result?.indicators?.quote?.[0]?.close) {
-          const ts = result.timestamp;
-          const closes = result.indicators.quote[0].close;
-          const postPeriod = meta.tradingPeriods?.post?.[0]?.[0];
-          if (postPeriod) {
-            for (let j = ts.length - 1; j >= 0; j--) {
-              if (ts[j] >= postPeriod.start && ts[j] <= postPeriod.end && closes[j] != null) {
-                postPrice = closes[j];
-                break;
-              }
-            }
-          }
-        }
-
-        // Try to get pre-market price from meta first, then fall back to OHLCV series
-        let prePrice = meta.preMarketPrice ?? null;
-        if (prePrice == null && result?.timestamp && result?.indicators?.quote?.[0]?.close) {
-          const ts = result.timestamp;
-          const closes = result.indicators.quote[0].close;
-          const prePeriod = meta.tradingPeriods?.pre?.[0]?.[0];
-          if (prePeriod) {
-            for (let j = ts.length - 1; j >= 0; j--) {
-              if (ts[j] >= prePeriod.start && ts[j] <= prePeriod.end && closes[j] != null) {
-                prePrice = closes[j];
-                break;
-              }
-            }
-          }
-        }
-
+        const postPrice = meta.postMarketPrice ?? null;
+        const prePrice  = meta.preMarketPrice  ?? null;
         const postChange = postPrice != null ? postPrice - meta.regularMarketPrice : null;
         const preChange  = prePrice  != null ? prePrice  - meta.regularMarketPrice : null;
+
+        // Scan OHLCV for 52-week high/low and peak date
+        const ts    = result?.timestamp ?? [];
+        const ohlcv = result?.indicators?.quote?.[0] ?? {};
+        const highs = ohlcv.high ?? [];
+        const lows  = ohlcv.low  ?? [];
+        let high52 = meta.fiftyTwoWeekHigh ?? null;
+        let low52  = meta.fiftyTwoWeekLow  ?? null;
+        let maxHigh = -Infinity, maxIdx = -1;
+        let minLow  =  Infinity;
+        for (let i = 0; i < highs.length; i++) {
+          if (highs[i] != null && highs[i] > maxHigh) { maxHigh = highs[i]; maxIdx = i; }
+          if (lows[i]  != null && lows[i]  < minLow)   minLow  = lows[i];
+        }
+        if (high52 == null && maxIdx >= 0) high52 = maxHigh;
+        if (low52  == null && minLow < Infinity) low52 = minLow;
+        const highDate = maxIdx >= 0 ? new Date(ts[maxIdx] * 1000) : null;
+
+        const highChange    = high52 != null ? meta.regularMarketPrice - high52 : null;
+        const highChangePct = high52 != null ? ((meta.regularMarketPrice - high52) / high52) * 100 : null;
 
         return {
           symbol: h.ticker,
@@ -736,6 +852,11 @@
           preMarketPrice: prePrice,
           preMarketChange: preChange,
           preMarketChangePercent: preChange != null ? (preChange / meta.regularMarketPrice) * 100 : null,
+          fiftyTwoWeekHigh: high52,
+          fiftyTwoWeekLow: low52,
+          fiftyTwoWeekHighChange: highChange,
+          fiftyTwoWeekHighChangePercent: highChangePct,
+          fiftyTwoWeekHighDate: highDate,
         };
       } catch (e) { return null; }
     });
@@ -761,6 +882,9 @@
     const tickers = ALL_ITEMS.map(h => h.ticker).join(',');
 
     try {
+      // Start peak-date fetch immediately in parallel with quote fetch
+      const peakDatesPromise = fetchPeakDates(ALL_ITEMS.map(h => h.ticker));
+
       let results;
       try {
         results = await fetchViaCrumb(tickers);
@@ -772,6 +896,17 @@
           throw new Error(`Crumb: ${e1.message} | Chart: ${e2.message}`);
         }
       }
+
+      // Merge peak dates (provides date + validates high value)
+      let peakDates = {};
+      try { peakDates = await peakDatesPromise; } catch(e) {}
+      results.forEach(q => {
+        const pd = peakDates[q.symbol];
+        if (pd) {
+          if (q.fiftyTwoWeekHighDate == null) q.fiftyTwoWeekHighDate = pd.date;
+          if (q.fiftyTwoWeekHigh == null) q.fiftyTwoWeekHigh = pd.high;
+        }
+      });
 
       const map = {};
       results.forEach(q => { map[q.symbol] = q; });
