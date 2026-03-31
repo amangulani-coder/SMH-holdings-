@@ -625,12 +625,11 @@
     updateMarketStatus(status);
 
     const tickers = ALL_ITEMS.map(h => h.ticker).join(',');
-    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${tickers}&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,postMarketPrice,postMarketChange,postMarketChangePercent,preMarketPrice,preMarketChange,preMarketChangePercent,longName,shortName`;
+    const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${tickers}&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,postMarketPrice,postMarketChange,postMarketChangePercent,preMarketPrice,preMarketChange,preMarketChangePercent,longName,shortName`;
+    const url = `https://corsproxy.io/?url=${encodeURIComponent(yahooUrl)}`;
 
     try {
-      const res = await fetch(url, {
-        headers: { 'Accept': 'application/json' },
-      });
+      const res = await fetch(url);
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
