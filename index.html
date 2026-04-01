@@ -931,7 +931,8 @@
   // Strategy 2: per-symbol v8 chart API — 1d/1m with pre+post market OHLCV extraction
   async function fetchViaChartAPI() {
     const fetches = ALL_ITEMS.map(async h => {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${h.ticker}?interval=1m&range=1d&includePrePost=true`;
+      // Cache-bust so proxies (allorigins etc.) cannot serve a stale cached response
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${h.ticker}?interval=1m&range=1d&includePrePost=true&_=${Date.now()}`;
       try {
         const data = await proxyFetch(url);
         const result = data?.chart?.result?.[0];
@@ -953,13 +954,13 @@
           return null;
         }
 
-        // Post-market: prefer meta field, fall back to OHLCV scan
-        let postPrice = meta.postMarketPrice ?? null;
-        if (postPrice == null) postPrice = lastCloseIn(meta.tradingPeriods?.post?.[0]?.[0]);
+        // Post-market: prefer OHLCV candle scan (actual traded price) over meta snapshot
+        let postPrice = lastCloseIn(meta.tradingPeriods?.post?.[0]?.[0]);
+        if (postPrice == null) postPrice = meta.postMarketPrice ?? null;
 
-        // Pre-market: prefer meta field, fall back to OHLCV scan
-        let prePrice = meta.preMarketPrice ?? null;
-        if (prePrice == null) prePrice = lastCloseIn(meta.tradingPeriods?.pre?.[0]?.[0]);
+        // Pre-market: prefer OHLCV candle scan over meta snapshot
+        let prePrice = lastCloseIn(meta.tradingPeriods?.pre?.[0]?.[0]);
+        if (prePrice == null) prePrice = meta.preMarketPrice ?? null;
 
         const postChange = postPrice != null ? postPrice - meta.regularMarketPrice : null;
         const preChange  = prePrice  != null ? prePrice  - meta.regularMarketPrice : null;
