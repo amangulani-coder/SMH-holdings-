@@ -1151,7 +1151,10 @@
           const extChange = nqParse(sec.netChange);
           const extPct    = nqParse(sec.percentageChange);
           const label     = (sec.label ?? d.marketStatus ?? '').toLowerCase();
-          if (label.includes('after') || label.includes('overtime')) {
+          const mktStatus = getMarketStatus();
+          if (label.includes('after') || label.includes('overtime') ||
+              (mktStatus === 'closed' && !label.includes('pre'))) {
+            // After 8 PM market closes but after-hours prices remain valid
             postPrice = extPrice; postChange = extChange; postPct = extPct;
           } else if (label.includes('pre')) {
             prePrice = extPrice; preChange = extChange; prePct = extPct;
@@ -1183,7 +1186,9 @@
         const postTime = price.postMarketTime ?? 0;
         const preTime  = price.preMarketTime  ?? 0;
         const validPost = postTime > now - 86400;
-        const validPre  = preTime  > now - 86400;
+        // Pre-market is only valid if its timestamp is from today's morning and it's still morning
+        const todayMidnight = now - (now % 86400);
+        const validPre  = preTime > todayMidnight && preTime < now && getMarketStatus() === 'pre';
         const postChg = validPost && postRaw != null && reg ? postRaw - reg : null;
         const preChg  = validPre  && preRaw  != null && reg ? preRaw  - reg : null;
         map[h.ticker] = {
@@ -1225,13 +1230,26 @@
           return null;
         }
 
-        // Post-market: prefer OHLCV candle scan (actual traded price) over meta snapshot
-        let postPrice = lastCloseIn(meta.tradingPeriods?.post?.[0]?.[0]);
+        // Post-market: scan any candle AFTER the regular session close (handles >8 PM too)
+        const regEnd = meta.tradingPeriods?.regular?.[0]?.[0]?.end ?? 0;
+        let postPrice = null;
+        if (regEnd) {
+          for (let j = ts.length - 1; j >= 0; j--) {
+            if (ts[j] > regEnd && closes[j] != null) { postPrice = closes[j]; break; }
+          }
+        }
+        // Fallback to official post window scan, then meta snapshot
+        if (postPrice == null) postPrice = lastCloseIn(meta.tradingPeriods?.post?.[0]?.[0]);
         if (postPrice == null) postPrice = meta.postMarketPrice ?? null;
 
-        // Pre-market: prefer OHLCV candle scan over meta snapshot
-        let prePrice = lastCloseIn(meta.tradingPeriods?.pre?.[0]?.[0]);
-        if (prePrice == null) prePrice = meta.preMarketPrice ?? null;
+        // Pre-market: only use if we are currently in pre-market hours (avoid stale morning data at night)
+        const nowSec = Math.floor(Date.now() / 1000);
+        const preEnd = meta.tradingPeriods?.pre?.[0]?.[0]?.end ?? 0;
+        let prePrice = null;
+        if (preEnd && nowSec <= preEnd + 3600) {  // within 1h after pre-market close = still morning
+          prePrice = lastCloseIn(meta.tradingPeriods?.pre?.[0]?.[0]);
+          if (prePrice == null) prePrice = meta.preMarketPrice ?? null;
+        }
 
         const postChange = postPrice != null ? postPrice - meta.regularMarketPrice : null;
         const preChange  = prePrice  != null ? prePrice  - meta.regularMarketPrice : null;
