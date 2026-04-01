@@ -784,12 +784,12 @@
     card.className = `card ${cardDir}${h.etf ? ' etf-card' : ''}${h.kr ? ' etf-card' : ''}`;
 
     // Helper to build one extended-hours row
-    function extRow(label, price, change, changePct) {
+    function extRow(label, price, change, changePct, noDataMsg) {
       if (price == null) return `
         <div class="ext-row">
           <div class="ext-left">
             <div class="ah-label">${label}</div>
-            <span class="ext-no-data">No data available</span>
+            <span class="ext-no-data">${noDataMsg}</span>
           </div>
         </div>`;
       const d = change > 0 ? 'up' : change < 0 ? 'down' : 'neutral';
@@ -824,8 +824,8 @@
       </div>
       <hr class="divider"/>
       <div class="ext-hours">
-        ${extRow('After Hours',  ahPrice,  ahChange,  ahChangePct)}
-        ${extRow('Pre-Market',   prePrice, preChange, preChangePct)}
+        ${extRow('After Hours', ahPrice,  ahChange,  ahChangePct,  'No after-hours data')}
+        ${extRow('Pre-Market',  prePrice, preChange, preChangePct, 'Pre-market trading has not started')}
       </div>
       ${weightSection}
       ${rangeSection}`;
@@ -992,37 +992,50 @@
     return Math.floor(h / 24) + 'd ago';
   }
 
+  // All tracked tickers for news targeting
+  const NEWS_TICKERS = 'NVDA,AVGO,TSM,ASML,AMD,QCOM,TXN,AMAT,MU,INTC,SMH';
+
   async function fetchNews() {
-    // Strategy 1: Yahoo Finance search API — returns JSON, works via our existing proxy
+    // Strategy 1: Yahoo Finance search API per ticker — deduplicated, ticker-specific headlines
     try {
-      const data = await proxyFetch(
-        'https://query2.finance.yahoo.com/v1/finance/search?q=semiconductor+chip+SMH&newsCount=5&quotesCount=0&enableFuzzyQuery=false'
+      const seen = new Set();
+      const results = [];
+      // Fetch news for a few high-interest tickers in parallel
+      const searches = ['NVDA', 'AMD', 'SMH', 'AVGO', 'TSM'].map(t =>
+        proxyFetch(`https://query2.finance.yahoo.com/v1/finance/search?q=${t}&newsCount=3&quotesCount=0&enableFuzzyQuery=false`)
+          .catch(() => null)
       );
-      const items = data?.news ?? [];
-      if (items.length) return items.slice(0, 5).map(n => ({
-        title: (n.title ?? '').trim(),
-        link:  n.link ?? '#',
-        date:  n.providerPublishTime ? new Date(n.providerPublishTime * 1000).toString() : '',
-      })).filter(i => i.title);
+      const pages = await Promise.all(searches);
+      for (const data of pages) {
+        for (const n of (data?.news ?? [])) {
+          if (!n.title || seen.has(n.uuid ?? n.title)) continue;
+          seen.add(n.uuid ?? n.title);
+          results.push({ title: n.title.trim(), link: n.link ?? '#',
+            date: n.providerPublishTime ? new Date(n.providerPublishTime * 1000).toString() : '' });
+        }
+      }
+      // Sort newest-first and return top 5
+      results.sort((a, b) => new Date(b.date) - new Date(a.date));
+      if (results.length >= 3) return results.slice(0, 5);
     } catch(e) {}
 
-    // Strategy 2: rss2json.com — converts RSS to JSON with CORS headers, no proxy needed
+    // Strategy 2: rss2json.com with all SMH tickers — returns JSON, CORS-enabled
     try {
-      const rssEncoded = encodeURIComponent('https://feeds.finance.yahoo.com/rss/2.0/headline?s=SMH,NVDA,AVGO,TSM,AMD&region=US&lang=en-US');
+      const rssEncoded = encodeURIComponent(
+        `https://feeds.finance.yahoo.com/rss/2.0/headline?s=${NEWS_TICKERS}&region=US&lang=en-US`
+      );
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 8000);
       const res = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${rssEncoded}&count=5`, { signal: ctrl.signal });
       clearTimeout(timer);
       const data = await res.json();
       if (data.status === 'ok' && data.items?.length) return data.items.slice(0, 5).map(n => ({
-        title: (n.title ?? '').trim(),
-        link:  n.link ?? '#',
-        date:  n.pubDate ?? '',
+        title: (n.title ?? '').trim(), link: n.link ?? '#', date: n.pubDate ?? '',
       })).filter(i => i.title);
     } catch(e) {}
 
-    // Strategy 3: RSS XML via proxy — distinguish consent HTML from real XML
-    const rssUrl = 'https://feeds.finance.yahoo.com/rss/2.0/headline?s=SMH,NVDA,AVGO,TSM,AMD&region=US&lang=en-US';
+    // Strategy 3: RSS XML via proxy with strict HTML detection
+    const rssUrl = `https://feeds.finance.yahoo.com/rss/2.0/headline?s=${NEWS_TICKERS}&region=US&lang=en-US`;
     for (const proxify of PROXIES) {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 8000);
@@ -1031,7 +1044,6 @@
         clearTimeout(timer);
         const raw = await res.text();
         const t = raw.trim();
-        // Reject HTML consent/login pages; accept only RSS/Atom XML
         const lo = t.toLowerCase();
         if (lo.startsWith('<!doctype') || lo.startsWith('<html')) continue;
         if (!t.startsWith('<')) continue;
