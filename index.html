@@ -353,6 +353,79 @@
       font-weight: 600;
     }
 
+    .news-section {
+      max-width: 900px;
+      margin: 0 auto 20px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 18px;
+    }
+
+    .news-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+
+    .news-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+    }
+
+    .news-source {
+      font-size: 10px;
+      color: var(--muted);
+      opacity: 0.7;
+    }
+
+    .news-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    .news-item {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+
+    .news-bullet {
+      color: var(--accent);
+      font-size: 10px;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    .news-link {
+      font-size: 13px;
+      color: var(--text);
+      text-decoration: none;
+      line-height: 1.4;
+      flex: 1;
+    }
+
+    .news-link:hover { color: var(--accent); }
+
+    .news-age {
+      font-size: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .news-skeleton {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
     .range52 {
       margin-top: 14px;
       padding-top: 12px;
@@ -454,6 +527,20 @@
 </header>
 
 <div class="error-banner" id="error-banner"></div>
+
+<div class="news-section" id="news-section">
+  <div class="news-header">
+    <span class="news-title">&#9711; Latest Semiconductor News</span>
+    <span class="news-source">Yahoo Finance</span>
+  </div>
+  <ul class="news-list" id="news-list">
+    <li class="news-skeleton"><div class="skeleton" style="width:90%;height:13px"></div></li>
+    <li class="news-skeleton"><div class="skeleton" style="width:80%;height:13px"></div></li>
+    <li class="news-skeleton"><div class="skeleton" style="width:85%;height:13px"></div></li>
+    <li class="news-skeleton"><div class="skeleton" style="width:75%;height:13px"></div></li>
+    <li class="news-skeleton"><div class="skeleton" style="width:88%;height:13px"></div></li>
+  </ul>
+</div>
 
 <div class="summary-bar" id="summary-bar" style="display:none">
   <div class="summary-item">
@@ -882,6 +969,60 @@
     return valid;
   }
 
+  function timeAgo(dateStr) {
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const m = Math.floor(diff / 60000);
+    if (m < 60) return m + 'm ago';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ago';
+    return Math.floor(h / 24) + 'd ago';
+  }
+
+  async function fetchNews() {
+    // Try multiple RSS feeds for SMH-related news
+    const feeds = [
+      'https://feeds.finance.yahoo.com/rss/2.0/headline?s=SMH,NVDA,AVGO,TSM,AMD&region=US&lang=en-US',
+      'https://feeds.finance.yahoo.com/rss/2.0/headline?s=SMH&region=US&lang=en-US',
+    ];
+    for (const rssUrl of feeds) {
+      for (const proxify of PROXIES) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 8000);
+        try {
+          const res = await fetch(proxify(rssUrl), { signal: ctrl.signal });
+          clearTimeout(timer);
+          const text = await res.text();
+          const t = text.trim();
+          if (!t.startsWith('<')) continue; // need XML
+          const doc = new DOMParser().parseFromString(t, 'text/xml');
+          const items = Array.from(doc.querySelectorAll('item')).slice(0, 5);
+          if (!items.length) continue;
+          return items.map(el => ({
+            title: el.querySelector('title')?.textContent?.trim() ?? '',
+            link:  el.querySelector('link')?.textContent?.trim() ?? '#',
+            date:  el.querySelector('pubDate')?.textContent ?? '',
+          })).filter(i => i.title);
+        } catch(e) { clearTimeout(timer); }
+      }
+    }
+    return [];
+  }
+
+  function renderNews(items) {
+    const list = document.getElementById('news-list');
+    if (!list) return;
+    if (!items.length) {
+      list.innerHTML = `<li style="font-size:12px;color:var(--muted)">News unavailable — check back later.</li>`;
+      return;
+    }
+    list.innerHTML = items.map(item => `
+      <li class="news-item">
+        <span class="news-bullet">●</span>
+        <a class="news-link" href="${item.link}" target="_blank" rel="noopener">${item.title}</a>
+        ${item.date ? `<span class="news-age">${timeAgo(item.date)}</span>` : ''}
+      </li>`).join('');
+  }
+
   async function loadData() {
     const btn       = document.getElementById('refresh-btn');
     const spinner   = document.getElementById('spinner');
@@ -895,6 +1036,9 @@
 
     buildSkeletons();
     updateMarketStatus(getMarketStatus());
+
+    // Fetch news in parallel — renders independently of price data
+    fetchNews().then(renderNews).catch(() => renderNews([]));
 
     const tickers = ALL_ITEMS.map(h => h.ticker).join(',');
 
