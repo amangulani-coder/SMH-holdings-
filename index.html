@@ -993,32 +993,59 @@
   }
 
   async function fetchNews() {
-    // Try multiple RSS feeds for SMH-related news
-    const feeds = [
-      'https://feeds.finance.yahoo.com/rss/2.0/headline?s=SMH,NVDA,AVGO,TSM,AMD&region=US&lang=en-US',
-      'https://feeds.finance.yahoo.com/rss/2.0/headline?s=SMH&region=US&lang=en-US',
-    ];
-    for (const rssUrl of feeds) {
-      for (const proxify of PROXIES) {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 8000);
-        try {
-          const res = await fetch(proxify(rssUrl), { signal: ctrl.signal });
-          clearTimeout(timer);
-          const text = await res.text();
-          const t = text.trim();
-          if (!t.startsWith('<')) continue; // need XML
-          const doc = new DOMParser().parseFromString(t, 'text/xml');
-          const items = Array.from(doc.querySelectorAll('item')).slice(0, 5);
-          if (!items.length) continue;
-          return items.map(el => ({
-            title: el.querySelector('title')?.textContent?.trim() ?? '',
-            link:  el.querySelector('link')?.textContent?.trim() ?? '#',
-            date:  el.querySelector('pubDate')?.textContent ?? '',
-          })).filter(i => i.title);
-        } catch(e) { clearTimeout(timer); }
-      }
+    // Strategy 1: Yahoo Finance search API — returns JSON, works via our existing proxy
+    try {
+      const data = await proxyFetch(
+        'https://query2.finance.yahoo.com/v1/finance/search?q=semiconductor+chip+SMH&newsCount=5&quotesCount=0&enableFuzzyQuery=false'
+      );
+      const items = data?.news ?? [];
+      if (items.length) return items.slice(0, 5).map(n => ({
+        title: (n.title ?? '').trim(),
+        link:  n.link ?? '#',
+        date:  n.providerPublishTime ? new Date(n.providerPublishTime * 1000).toString() : '',
+      })).filter(i => i.title);
+    } catch(e) {}
+
+    // Strategy 2: rss2json.com — converts RSS to JSON with CORS headers, no proxy needed
+    try {
+      const rssEncoded = encodeURIComponent('https://feeds.finance.yahoo.com/rss/2.0/headline?s=SMH,NVDA,AVGO,TSM,AMD&region=US&lang=en-US');
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      const res = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${rssEncoded}&count=5`, { signal: ctrl.signal });
+      clearTimeout(timer);
+      const data = await res.json();
+      if (data.status === 'ok' && data.items?.length) return data.items.slice(0, 5).map(n => ({
+        title: (n.title ?? '').trim(),
+        link:  n.link ?? '#',
+        date:  n.pubDate ?? '',
+      })).filter(i => i.title);
+    } catch(e) {}
+
+    // Strategy 3: RSS XML via proxy — distinguish consent HTML from real XML
+    const rssUrl = 'https://feeds.finance.yahoo.com/rss/2.0/headline?s=SMH,NVDA,AVGO,TSM,AMD&region=US&lang=en-US';
+    for (const proxify of PROXIES) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      try {
+        const res = await fetch(proxify(rssUrl), { signal: ctrl.signal });
+        clearTimeout(timer);
+        const raw = await res.text();
+        const t = raw.trim();
+        // Reject HTML consent/login pages; accept only RSS/Atom XML
+        const lo = t.toLowerCase();
+        if (lo.startsWith('<!doctype') || lo.startsWith('<html')) continue;
+        if (!t.startsWith('<')) continue;
+        const doc = new DOMParser().parseFromString(t, 'text/xml');
+        const items = Array.from(doc.querySelectorAll('item')).slice(0, 5);
+        if (!items.length) continue;
+        return items.map(el => ({
+          title: el.querySelector('title')?.textContent?.trim() ?? '',
+          link:  el.querySelector('link')?.textContent?.trim() ?? '#',
+          date:  el.querySelector('pubDate')?.textContent ?? '',
+        })).filter(i => i.title);
+      } catch(e) { clearTimeout(timer); }
     }
+
     return [];
   }
 
