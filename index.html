@@ -1208,8 +1208,9 @@
         chartResults.forEach(q => { chartMap[q.symbol] = q; });
       }
       results.forEach(q => {
-        // Pick best available source for post-market (prefer NASDAQ for US stocks)
-        const sources = [nasdaqEH[q.symbol], yahooEH[q.symbol], chartMap[q.symbol]];
+        // Priority: WebSocket live stream > NASDAQ API > Yahoo quoteSummary > chart OHLCV > crumb
+        const live    = liveQuotes[q.symbol];
+        const sources = [live, nasdaqEH[q.symbol], yahooEH[q.symbol], chartMap[q.symbol]];
         const postSrc = sources.find(s => s?.postMarketPrice != null);
         const preSrc  = sources.find(s => s?.preMarketPrice  != null);
         if (postSrc) {
@@ -1264,7 +1265,114 @@
     }
   }
 
+  // ── Yahoo Finance WebSocket streamer ────────────────────────────────────────
+  // Connects to the same real-time feed used by finance.yahoo.com — no proxy,
+  // no CORS issues, no caching. Messages are protobuf-encoded binary frames.
+  const liveQuotes = {};   // keyed by ticker; holds latest extended-hours data
+  let   streamerWs  = null;
+
+  // Minimal protobuf decoder for Yahoo Finance PricingData schema
+  function decodeYahooProto(data) {
+    let bytes;
+    if (data instanceof ArrayBuffer) {
+      bytes = new Uint8Array(data);
+    } else if (typeof data === 'string') {
+      // Occasionally base64-encoded
+      try {
+        const b = atob(data);
+        bytes = new Uint8Array(b.length);
+        for (let i = 0; i < b.length; i++) bytes[i] = b.charCodeAt(i);
+      } catch(e) { return null; }
+    } else { return null; }
+
+    const q = {};
+    let pos = 0;
+
+    const readVarint = () => {
+      let v = 0, s = 0;
+      while (pos < bytes.length) {
+        const b = bytes[pos++];
+        v |= (b & 0x7F) << s;
+        if (!(b & 0x80)) break;
+        s += 7;
+      }
+      return v;
+    };
+    const readF32 = () => {
+      if (pos + 4 > bytes.length) { pos += 4; return 0; }
+      const v = new DataView(bytes.buffer, bytes.byteOffset + pos, 4).getFloat32(0, true);
+      pos += 4; return v;
+    };
+    const readStr = len => {
+      const v = new TextDecoder().decode(bytes.slice(pos, pos + len));
+      pos += len; return v;
+    };
+
+    while (pos < bytes.length) {
+      try {
+        const tag = readVarint();
+        const fn = tag >> 3, wt = tag & 0x7;
+        if (wt === 0) {        // varint
+          const v = readVarint();
+          if (fn === 3)  q.time = v;
+          if (fn === 7)  q.marketHours = v;   // 0=pre, 1=regular, 2=post, 3=ext-post
+          if (fn === 9)  q.dayVolume = v;
+        } else if (wt === 5) { // float32
+          const v = readF32();
+          if (fn === 2)  q.price = v;
+          if (fn === 8)  q.changePercent = v;
+          if (fn === 12) q.change = v;
+          if (fn === 14) q.previousClose = v;
+          if (fn === 50) q.regularMarketPrice = v;
+          if (fn === 52) q.regularMarketChange = v;
+          if (fn === 57) q.regularMarketChangePercent = v;
+        } else if (wt === 2) { // length-delimited (string)
+          const len = readVarint();
+          if (fn === 1) q.id = readStr(len); else pos += len;
+        } else if (wt === 1) { // 64-bit — skip
+          pos += 8;
+        } else break;
+      } catch(e) { break; }
+    }
+    return (q.id && q.price) ? q : null;
+  }
+
+  function startStreamer() {
+    if (streamerWs) return;
+    try {
+      streamerWs = new WebSocket('wss://streamer.finance.yahoo.com');
+      streamerWs.binaryType = 'arraybuffer';
+      streamerWs.onopen = () => {
+        streamerWs.send(JSON.stringify({ subscribe: ALL_ITEMS.map(h => h.ticker) }));
+      };
+      streamerWs.onmessage = e => {
+        const q = decodeYahooProto(e.data);
+        if (!q) return;
+        const mh = q.marketHours ?? 1;
+        if (mh === 2 || mh === 3) {   // post-market
+          liveQuotes[q.id] = {
+            _s: 'post',
+            postMarketPrice:         q.price,
+            postMarketChange:        q.change        ?? null,
+            postMarketChangePercent: q.changePercent ?? null,
+          };
+        } else if (mh === 0) {          // pre-market
+          liveQuotes[q.id] = {
+            _s: 'pre',
+            preMarketPrice:          q.price,
+            preMarketChange:         q.change        ?? null,
+            preMarketChangePercent:  q.changePercent ?? null,
+          };
+        }
+      };
+      streamerWs.onerror = () => { streamerWs = null; };
+      streamerWs.onclose = () => { streamerWs = null; setTimeout(startStreamer, 15000); };
+    } catch(e) { streamerWs = null; }
+  }
+  // ────────────────────────────────────────────────────────────────────────────
+
   loadData();
+  startStreamer();
   setInterval(loadData, 60000);
 </script>
 </body>
