@@ -928,6 +928,39 @@
     return results;
   }
 
+  // ── StockData.org ────────────────────────────────────────────────────────────
+  // Get a free API token at https://www.stockdata.org  (100 req/day free tier)
+  // Supports CORS natively — no proxy needed. Returns explicit pre/post market fields.
+  const STOCKDATA_TOKEN = 'demo'; // replace with your token from stockdata.org
+
+  async function fetchExtendedHoursViaStockData() {
+    if (!STOCKDATA_TOKEN || STOCKDATA_TOKEN === 'demo') return {};
+    const usItems = [...ETFS, ...HOLDINGS];
+    const symbols = usItems.map(h => h.ticker).join(',');
+    const url = `https://api.stockdata.org/v1/data/quote?symbols=${symbols}&api_token=${STOCKDATA_TOKEN}`;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 10000);
+    try {
+      const res  = await fetch(url, { signal: ctrl.signal });
+      clearTimeout(timer);
+      const json = await res.json();
+      const map  = {};
+      for (const d of (json?.data ?? [])) {
+        if (!d?.ticker) continue;
+        map[d.ticker] = {
+          postMarketPrice:         d.post_market_price         ?? null,
+          postMarketChange:        d.post_market_change        ?? null,
+          postMarketChangePercent: d.post_market_change_percent ?? null,
+          preMarketPrice:          d.pre_market_price          ?? null,
+          preMarketChange:         d.pre_market_change         ?? null,
+          preMarketChangePercent:  d.pre_market_change_percent  ?? null,
+        };
+      }
+      return map;
+    } catch(e) { clearTimeout(timer); return {}; }
+  }
+  // ─────────────────────────────────────────────────────────────────────────────
+
   // Parse NASDAQ API price strings like "$388.04", "+4.64", "-3.62%"
   const nqParse = s => {
     if (!s || s === 'N/A' || s === '--' || s === 'undefined') return null;
@@ -1187,6 +1220,7 @@
     try {
       // Fire all fetches in parallel
       const peakDatesPromise   = fetchPeakDates(ALL_ITEMS.map(h => h.ticker));
+      const stockdataPromise   = fetchExtendedHoursViaStockData().catch(() => ({}));
       const nasdaqPromise      = fetchExtendedHoursViaNasdaq().catch(e => { console.warn('NASDAQ:', e.message); return {}; });
       const yahooEhPromise     = fetchExtendedHoursViaYahoo().catch(e => { console.warn('YahooEH:', e.message); return {}; });
       const chartPromise       = fetchViaChartAPI().catch(e => { console.warn('Chart API:', e.message); return null; });
@@ -1201,16 +1235,15 @@
         if (!results) throw new Error(`Crumb: ${e1.message} | Chart API also failed`);
       }
 
-      // Extended-hours priority: NASDAQ API > Yahoo quoteSummary > Yahoo chart OHLCV > crumb field
-      const [nasdaqEH, yahooEH, chartResults] = await Promise.all([nasdaqPromise, yahooEhPromise, chartPromise]);
+      // Extended-hours priority: StockData > WebSocket > NASDAQ > Yahoo quoteSummary > chart OHLCV
+      const [stockdataEH, nasdaqEH, yahooEH, chartResults] = await Promise.all([stockdataPromise, nasdaqPromise, yahooEhPromise, chartPromise]);
       const chartMap = {};
       if (chartResults && results !== chartResults) {
         chartResults.forEach(q => { chartMap[q.symbol] = q; });
       }
       results.forEach(q => {
-        // Priority: WebSocket live stream > NASDAQ API > Yahoo quoteSummary > chart OHLCV > crumb
         const live    = liveQuotes[q.symbol];
-        const sources = [live, nasdaqEH[q.symbol], yahooEH[q.symbol], chartMap[q.symbol]];
+        const sources = [stockdataEH[q.symbol], live, nasdaqEH[q.symbol], yahooEH[q.symbol], chartMap[q.symbol]];
         const postSrc = sources.find(s => s?.postMarketPrice != null);
         const preSrc  = sources.find(s => s?.preMarketPrice  != null);
         if (postSrc) {
