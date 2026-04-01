@@ -928,9 +928,53 @@
     return results;
   }
 
-  // Strategy: per-symbol v10 quoteSummary price module — explicit pre/post market fields with timestamps
-  // This is the same data source Yahoo Finance UI uses for its quote display
-  async function fetchExtendedHours() {
+  // Parse NASDAQ API price strings like "$388.04", "+4.64", "-3.62%"
+  const nqParse = s => {
+    if (!s || s === 'N/A' || s === '--' || s === 'undefined') return null;
+    const neg = s.includes('-');
+    const n = parseFloat(s.replace(/[^0-9.]/g, ''));
+    return isNaN(n) ? null : (neg ? -n : n);
+  };
+
+  // Primary extended-hours source: NASDAQ API — structured primaryData/secondaryData, no API key needed
+  // Works for all US-listed stocks (including NYSE, NASDAQ). Korean stocks excluded (KRX, not applicable).
+  async function fetchExtendedHoursViaNasdaq() {
+    const map = {};
+    const usItems = [...ETFS, ...HOLDINGS];
+    await Promise.all(usItems.map(async h => {
+      try {
+        const assetClass = h.etf ? 'etf' : 'stocks';
+        const url = `https://api.nasdaq.com/api/quote/${h.ticker}/info?assetclass=${assetClass}&_=${Date.now()}`;
+        const data = await proxyFetch(url);
+        const d = data?.data;
+        if (!d?.primaryData?.lastSalePrice) return;
+
+        const sec = d.secondaryData;
+        let postPrice = null, postChange = null, postPct = null;
+        let prePrice  = null, preChange  = null, prePct  = null;
+
+        if (sec?.lastSalePrice && sec.lastSalePrice !== 'N/A') {
+          const extPrice  = nqParse(sec.lastSalePrice);
+          const extChange = nqParse(sec.netChange);
+          const extPct    = nqParse(sec.percentageChange);
+          const label     = (sec.label ?? d.marketStatus ?? '').toLowerCase();
+          if (label.includes('after') || label.includes('overtime')) {
+            postPrice = extPrice; postChange = extChange; postPct = extPct;
+          } else if (label.includes('pre')) {
+            prePrice = extPrice; preChange = extChange; prePct = extPct;
+          }
+        }
+        map[h.ticker] = {
+          postMarketPrice: postPrice, postMarketChange: postChange, postMarketChangePercent: postPct,
+          preMarketPrice:  prePrice,  preMarketChange:  preChange,  preMarketChangePercent:  prePct,
+        };
+      } catch(e) {}
+    }));
+    return map;
+  }
+
+  // Secondary extended-hours fallback: Yahoo Finance v10 quoteSummary price module
+  async function fetchExtendedHoursViaYahoo() {
     const map = {};
     await Promise.all(ALL_ITEMS.map(async h => {
       try {
@@ -942,23 +986,20 @@
         const reg     = price.regularMarketPrice?.raw ?? null;
         const postRaw = price.postMarketPrice?.raw    ?? null;
         const preRaw  = price.preMarketPrice?.raw     ?? null;
-        const postChg = price.postMarketChange?.raw   ?? (postRaw != null && reg != null ? postRaw - reg : null);
-        const preChg  = price.preMarketChange?.raw    ?? (preRaw  != null && reg != null ? preRaw  - reg : null);
-        const postPct = price.postMarketChangePercent?.raw != null ? price.postMarketChangePercent.raw * 100
-                      : (postChg != null && reg ? (postChg / reg) * 100 : null);
-        const prePct  = price.preMarketChangePercent?.raw  != null ? price.preMarketChangePercent.raw  * 100
-                      : (preChg  != null && reg ? (preChg  / reg) * 100 : null);
-        const now = Math.floor(Date.now() / 1000);
+        const now     = Math.floor(Date.now() / 1000);
         const postTime = price.postMarketTime ?? 0;
         const preTime  = price.preMarketTime  ?? 0;
+        const validPost = postTime > now - 86400;
+        const validPre  = preTime  > now - 86400;
+        const postChg = validPost && postRaw != null && reg ? postRaw - reg : null;
+        const preChg  = validPre  && preRaw  != null && reg ? preRaw  - reg : null;
         map[h.ticker] = {
-          // Only use post/pre prices if the timestamp is within last 24h (avoids stale overnight data)
-          postMarketPrice:         (postTime > now - 86400) ? postRaw : null,
-          postMarketChange:        (postTime > now - 86400) ? postChg : null,
-          postMarketChangePercent: (postTime > now - 86400) ? postPct : null,
-          preMarketPrice:          (preTime  > now - 86400) ? preRaw  : null,
-          preMarketChange:         (preTime  > now - 86400) ? preChg  : null,
-          preMarketChangePercent:  (preTime  > now - 86400) ? prePct  : null,
+          postMarketPrice:         validPost ? postRaw : null,
+          postMarketChange:        postChg,
+          postMarketChangePercent: postChg != null && reg ? (postChg / reg) * 100 : null,
+          preMarketPrice:          validPre  ? preRaw  : null,
+          preMarketChange:         preChg,
+          preMarketChangePercent:  preChg  != null && reg ? (preChg  / reg) * 100 : null,
         };
       } catch(e) {}
     }));
@@ -1145,9 +1186,10 @@
 
     try {
       // Fire all fetches in parallel
-      const peakDatesPromise  = fetchPeakDates(ALL_ITEMS.map(h => h.ticker));
-      const extHoursPromise   = fetchExtendedHours().catch(e => { console.warn('ExtHours:', e.message); return {}; });
-      const chartPromise      = fetchViaChartAPI().catch(e => { console.warn('Chart API:', e.message); return null; });
+      const peakDatesPromise   = fetchPeakDates(ALL_ITEMS.map(h => h.ticker));
+      const nasdaqPromise      = fetchExtendedHoursViaNasdaq().catch(e => { console.warn('NASDAQ:', e.message); return {}; });
+      const yahooEhPromise     = fetchExtendedHoursViaYahoo().catch(e => { console.warn('YahooEH:', e.message); return {}; });
+      const chartPromise       = fetchViaChartAPI().catch(e => { console.warn('Chart API:', e.message); return null; });
 
       // Regular close data: crumb (batch v7) → chart API (per-symbol v8)
       let results;
@@ -1159,34 +1201,26 @@
         if (!results) throw new Error(`Crumb: ${e1.message} | Chart API also failed`);
       }
 
-      // Extended-hours: quoteSummary/price (primary) → chart OHLCV (fallback) → crumb field (last resort)
-      const [extHours, chartResults] = await Promise.all([extHoursPromise, chartPromise]);
+      // Extended-hours priority: NASDAQ API > Yahoo quoteSummary > Yahoo chart OHLCV > crumb field
+      const [nasdaqEH, yahooEH, chartResults] = await Promise.all([nasdaqPromise, yahooEhPromise, chartPromise]);
       const chartMap = {};
       if (chartResults && results !== chartResults) {
         chartResults.forEach(q => { chartMap[q.symbol] = q; });
       }
       results.forEach(q => {
-        const eh = extHours[q.symbol];
-        const cq = chartMap[q.symbol];
-        // Post-market: quoteSummary price module > chart OHLCV > crumb v7 field
-        if (eh?.postMarketPrice != null) {
-          q.postMarketPrice          = eh.postMarketPrice;
-          q.postMarketChange         = eh.postMarketChange;
-          q.postMarketChangePercent  = eh.postMarketChangePercent;
-        } else if (cq?.postMarketPrice != null) {
-          q.postMarketPrice          = cq.postMarketPrice;
-          q.postMarketChange         = cq.postMarketChange;
-          q.postMarketChangePercent  = cq.postMarketChangePercent;
+        // Pick best available source for post-market (prefer NASDAQ for US stocks)
+        const sources = [nasdaqEH[q.symbol], yahooEH[q.symbol], chartMap[q.symbol]];
+        const postSrc = sources.find(s => s?.postMarketPrice != null);
+        const preSrc  = sources.find(s => s?.preMarketPrice  != null);
+        if (postSrc) {
+          q.postMarketPrice         = postSrc.postMarketPrice;
+          q.postMarketChange        = postSrc.postMarketChange;
+          q.postMarketChangePercent = postSrc.postMarketChangePercent;
         }
-        // Pre-market: same priority
-        if (eh?.preMarketPrice != null) {
-          q.preMarketPrice           = eh.preMarketPrice;
-          q.preMarketChange          = eh.preMarketChange;
-          q.preMarketChangePercent   = eh.preMarketChangePercent;
-        } else if (cq?.preMarketPrice != null) {
-          q.preMarketPrice           = cq.preMarketPrice;
-          q.preMarketChange          = cq.preMarketChange;
-          q.preMarketChangePercent   = cq.preMarketChangePercent;
+        if (preSrc) {
+          q.preMarketPrice          = preSrc.preMarketPrice;
+          q.preMarketChange         = preSrc.preMarketChange;
+          q.preMarketChangePercent  = preSrc.preMarketChangePercent;
         }
       });
 
