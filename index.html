@@ -855,25 +855,25 @@
     document.getElementById('summary-bar').style.display = 'flex';
   }
 
-  // Three proxies tried in order for every request
+  // corsproxy.io is first — it's a true passthrough with no server-side caching.
+  // allorigins.win caches for 2 min and is now last resort only.
   const PROXIES = [
-    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
     u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
     u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
   ];
 
-  // Fetch via proxy, skip if response is HTML (Yahoo consent/login page)
+  // Fetch via proxy; cache: 'no-store' prevents browser-level caching too
   async function proxyFetch(yahooUrl, asText = false, timeoutMs = 8000) {
     let lastErr = 'no proxies attempted';
     for (const proxify of PROXIES) {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
-        const res = await fetch(proxify(yahooUrl), { signal: ctrl.signal });
+        const res = await fetch(proxify(yahooUrl), { signal: ctrl.signal, cache: 'no-store' });
         clearTimeout(timer);
         const text = await res.text();
         const t = text.trim();
-        // Reject HTML responses (Yahoo consent/login pages)
         if (t.startsWith('<')) { lastErr = 'got HTML (consent/login page)'; continue; }
         if (asText) return t;
         if (!t.startsWith('{') && !t.startsWith('[')) { lastErr = 'unexpected response: ' + t.slice(0, 40); continue; }
@@ -928,13 +928,49 @@
     return results;
   }
 
-  // ── StockData.org ────────────────────────────────────────────────────────────
-  // Get a free API token at https://www.stockdata.org  (100 req/day free tier)
-  // Supports CORS natively — no proxy needed. Returns explicit pre/post market fields.
-  const STOCKDATA_TOKEN = 'demo'; // replace with your token from stockdata.org
+  // ── API tokens for CORS-native extended-hours data ───────────────────────────
+  // Either token gives accurate real-time pre/post market prices without any proxy.
+  // Without a token the app falls back to proxy-based sources which may lag.
+  //
+  //  Finnhub  — free at https://finnhub.io   (60 req/min, no credit card)
+  //  StockData — free at https://www.stockdata.org  (100 req/day)
+  //
+  const FINNHUB_TOKEN   = '';   // ← paste your Finnhub token here
+  const STOCKDATA_TOKEN = '';   // ← paste your StockData.org token here
+  // ─────────────────────────────────────────────────────────────────────────────
 
+  // Finnhub: single call per ticker, CORS-native, truly real-time.
+  // c = current price (AH price after 4 PM, pre-market price before 9:30 AM)
+  // d/dp = change & % change from most recent regular close (pc)
+  async function fetchExtendedHoursViaFinnhub() {
+    if (!FINNHUB_TOKEN) return {};
+    const status  = getMarketStatus();
+    if (status === 'open') return {};
+    const map     = {};
+    const usItems = [...ETFS, ...HOLDINGS];
+    await Promise.all(usItems.map(async h => {
+      try {
+        const ctrl = new AbortController();
+        setTimeout(() => ctrl.abort(), 8000);
+        const res = await fetch(
+          `https://finnhub.io/api/v1/quote?symbol=${h.ticker}&token=${FINNHUB_TOKEN}`,
+          { signal: ctrl.signal, cache: 'no-store' }
+        );
+        const d = await res.json();
+        if (!d?.c) return;
+        if (status === 'after' || status === 'closed') {
+          map[h.ticker] = { postMarketPrice: d.c, postMarketChange: d.d ?? null, postMarketChangePercent: d.dp ?? null };
+        } else {
+          map[h.ticker] = { preMarketPrice:  d.c, preMarketChange:  d.d ?? null, preMarketChangePercent:  d.dp ?? null };
+        }
+      } catch(e) {}
+    }));
+    return map;
+  }
+
+  // StockData.org: one batched call for all US tickers, CORS-native.
   async function fetchExtendedHoursViaStockData() {
-    if (!STOCKDATA_TOKEN || STOCKDATA_TOKEN === 'demo') return {};
+    if (!STOCKDATA_TOKEN) return {};
     const usItems = [...ETFS, ...HOLDINGS];
     const symbols = usItems.map(h => h.ticker).join(',');
     const url = `https://api.stockdata.org/v1/data/quote?symbols=${symbols}&api_token=${STOCKDATA_TOKEN}`;
@@ -1220,6 +1256,7 @@
     try {
       // Fire all fetches in parallel
       const peakDatesPromise   = fetchPeakDates(ALL_ITEMS.map(h => h.ticker));
+      const finnhubPromise     = fetchExtendedHoursViaFinnhub().catch(() => ({}));
       const stockdataPromise   = fetchExtendedHoursViaStockData().catch(() => ({}));
       const nasdaqPromise      = fetchExtendedHoursViaNasdaq().catch(e => { console.warn('NASDAQ:', e.message); return {}; });
       const yahooEhPromise     = fetchExtendedHoursViaYahoo().catch(e => { console.warn('YahooEH:', e.message); return {}; });
@@ -1235,15 +1272,15 @@
         if (!results) throw new Error(`Crumb: ${e1.message} | Chart API also failed`);
       }
 
-      // Extended-hours priority: StockData > WebSocket > NASDAQ > Yahoo quoteSummary > chart OHLCV
-      const [stockdataEH, nasdaqEH, yahooEH, chartResults] = await Promise.all([stockdataPromise, nasdaqPromise, yahooEhPromise, chartPromise]);
+      // Extended-hours priority: Finnhub > StockData > WebSocket > NASDAQ > Yahoo quoteSummary > chart OHLCV
+      const [finnhubEH, stockdataEH, nasdaqEH, yahooEH, chartResults] = await Promise.all([finnhubPromise, stockdataPromise, nasdaqPromise, yahooEhPromise, chartPromise]);
       const chartMap = {};
       if (chartResults && results !== chartResults) {
         chartResults.forEach(q => { chartMap[q.symbol] = q; });
       }
       results.forEach(q => {
         const live    = liveQuotes[q.symbol];
-        const sources = [stockdataEH[q.symbol], live, nasdaqEH[q.symbol], yahooEH[q.symbol], chartMap[q.symbol]];
+        const sources = [finnhubEH[q.symbol], stockdataEH[q.symbol], live, nasdaqEH[q.symbol], yahooEH[q.symbol], chartMap[q.symbol]];
         const postSrc = sources.find(s => s?.postMarketPrice != null);
         const preSrc  = sources.find(s => s?.preMarketPrice  != null);
         if (postSrc) {
