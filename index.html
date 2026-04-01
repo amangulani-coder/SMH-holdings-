@@ -501,7 +501,13 @@
     { ticker: 'INTC',  name: 'Intel Corporation',              weight: 2.49  },
   ];
 
-  const ALL_ITEMS = [...ETFS, ...HOLDINGS];
+  // Korean semiconductor stocks (priced in KRW on KRX)
+  const KR_STOCKS = [
+    { ticker: '005930.KS', name: 'Samsung Electronics',   kr: true },
+    { ticker: '000660.KS', name: 'SK Hynix Inc.',          kr: true },
+  ];
+
+  const ALL_ITEMS = [...ETFS, ...HOLDINGS, ...KR_STOCKS];
   const MAX_WEIGHT = Math.max(...HOLDINGS.map(h => h.weight));
 
   function fmt(n, decimals = 2) {
@@ -556,10 +562,15 @@
       if (i === ETFS.length) {
         grid.innerHTML += `<div class="section-header" id="section-holdings">Top 10 Holdings</div>`;
       }
+      if (i === ETFS.length + HOLDINGS.length) {
+        grid.innerHTML += `<div class="section-header" id="section-kr">Korean Semiconductors (KRX · KRW)</div>`;
+      }
       const rankBadge = h.etf
         ? `<span class="rank etf-badge">ETF</span>`
-        : `<span class="rank">#${i - ETFS.length + 1}</span>`;
-      const weightSection = h.etf ? '' : `
+        : h.kr
+          ? `<span class="rank" style="background:#1e3a5f;color:#60a5fa">KRX</span>`
+          : `<span class="rank">#${i - ETFS.length + 1}</span>`;
+      const weightSection = (h.etf || h.kr || h.weight == null) ? '' : `
           <div class="weight-bar">
             <div class="weight-text">ETF Weight: ${h.weight}%</div>
             <div class="bar-track"><div class="bar-fill" style="width:${(h.weight / MAX_WEIGHT) * 100}%"></div></div>
@@ -634,8 +645,10 @@
 
     const rankBadge = h.etf
       ? `<span class="rank etf-badge">ETF</span>`
-      : `<span class="rank">#${i - ETFS.length + 1}</span>`;
-    const weightSection = h.etf ? '' : `
+      : h.kr
+        ? `<span class="rank" style="background:#1e3a5f;color:#60a5fa">KRX</span>`
+        : `<span class="rank">#${i - ETFS.length + 1}</span>`;
+    const weightSection = (h.etf || h.kr || h.weight == null) ? '' : `
       <div class="weight-bar">
         <div class="weight-text">ETF Weight: ${h.weight}%</div>
         <div class="bar-track"><div class="bar-fill" style="width:${(h.weight / MAX_WEIGHT) * 100}%"></div></div>
@@ -665,14 +678,20 @@
           <div class="range52-dot" style="left:${pct52}%"></div>
         </div>
         <div class="range52-ends">
-          <span>${fmtPrice(low52)}</span>
-          <span>${fmtPrice(high52)}</span>
+          <span>${fmtP(low52)}</span>
+          <span>${fmtP(high52)}</span>
         </div>
         ${peakDateStr ? `<div class="range52-peak-date">Peaked ${peakDateStr}</div>` : ''}
       </div>` : '';
 
     const cardDir = noAHData ? regDir : dir;
-    card.className = `card ${cardDir}${h.etf ? ' etf-card' : ''}`;
+    const fmtP = h.kr
+      ? n => (n == null || isNaN(n) ? '–' : '₩' + Math.round(n).toLocaleString('en-US'))
+      : fmtPrice;
+    const fmtC = h.kr
+      ? n => (n == null || isNaN(n) ? '–' : (n >= 0 ? '+' : '') + '₩' + Math.round(n).toLocaleString('en-US'))
+      : n => fmtPrice(n);
+    card.className = `card ${cardDir}${h.etf ? ' etf-card' : ''}${h.kr ? ' etf-card' : ''}`;
     card.innerHTML = `
       <div class="card-header">
         <span class="ticker">${h.ticker}</span>
@@ -682,12 +701,12 @@
       <div class="price-section">
         <div class="price-label">Regular Close</div>
         <div class="price-row">
-          <span class="regular-price">${fmtPrice(regularPrice)}</span>
+          <span class="regular-price">${fmtP(regularPrice)}</span>
           <span class="change-badge ${regDir}" style="font-size:12px;padding:2px 6px">
             ${regArrow} ${regSign}${fmt(regChangePct, 2)}%
           </span>
         </div>
-        <div style="font-size:11px;color:var(--muted);margin-top:2px">${regSign}${fmtPrice(regChange)} today</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">${regSign}${fmtP(regChange)} today</div>
       </div>
       <hr class="divider"/>
       <div class="ah-section">
@@ -700,8 +719,8 @@
         ` : `
         <div>
           <div class="ah-label">${sessionLabel}</div>
-          <div class="ah-price">${fmtPrice(showPrice)}</div>
-          <div style="font-size:11px;color:var(--muted);margin-top:2px">${sign}${fmtPrice(showChange)} from close</div>
+          <div class="ah-price">${fmtP(showPrice)}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">${sign}${fmtP(showChange)} from close</div>
         </div>
         <span class="change-badge ${dir}">
           ${arrow} ${sign}${fmt(showChangePct, 2)}%
