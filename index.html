@@ -654,6 +654,10 @@
         <div class="bar-track"><div class="bar-fill" style="width:${(h.weight / MAX_WEIGHT) * 100}%"></div></div>
       </div>`;
 
+    const fmtP = h.kr
+      ? n => (n == null || isNaN(n) ? '–' : '₩' + Math.round(n).toLocaleString('en-US'))
+      : fmtPrice;
+
     // 52-week range
     const high52 = q.fiftyTwoWeekHigh ?? null;
     const low52  = q.fiftyTwoWeekLow  ?? null;
@@ -685,12 +689,6 @@
       </div>` : '';
 
     const cardDir = noAHData ? regDir : dir;
-    const fmtP = h.kr
-      ? n => (n == null || isNaN(n) ? '–' : '₩' + Math.round(n).toLocaleString('en-US'))
-      : fmtPrice;
-    const fmtC = h.kr
-      ? n => (n == null || isNaN(n) ? '–' : (n >= 0 ? '+' : '') + '₩' + Math.round(n).toLocaleString('en-US'))
-      : n => fmtPrice(n);
     card.className = `card ${cardDir}${h.etf ? ' etf-card' : ''}${h.kr ? ' etf-card' : ''}`;
     card.innerHTML = `
       <div class="card-header">
