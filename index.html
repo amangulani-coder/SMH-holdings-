@@ -995,14 +995,18 @@
   // All tracked tickers for news targeting
   const NEWS_TICKERS = 'NVDA,AVGO,TSM,ASML,AMD,QCOM,TXN,AMAT,MU,INTC,SMH';
 
+  // Keywords that indicate semiconductor/chip relevance
+  const SEMI_RE = /nvidia|nvidias|amd|intel|tsmc|broadcom|qualcomm|micron|asml|marvell|applied material|semiconductor|chip|wafer|foundry|fab\b|nvda|avgo\b|tsm\b|mu\b|intc\b|qcom|txn\b|amat\b|smh\b|hynix|samsung|arm\b|palantir|soc\b|gpu\b|cpu\b|ai chip/i;
+  function isSemiNews(title) { return SEMI_RE.test(title); }
+
   async function fetchNews() {
     // Strategy 1: Yahoo Finance search API per ticker — deduplicated, ticker-specific headlines
     try {
       const seen = new Set();
       const results = [];
       // Fetch news for a few high-interest tickers in parallel
-      const searches = ['NVDA', 'AMD', 'SMH', 'AVGO', 'TSM'].map(t =>
-        proxyFetch(`https://query2.finance.yahoo.com/v1/finance/search?q=${t}&newsCount=3&quotesCount=0&enableFuzzyQuery=false`)
+      const searches = ['NVDA', 'AMD', 'SMH', 'AVGO', 'TSM', 'INTC', 'MU'].map(t =>
+        proxyFetch(`https://query2.finance.yahoo.com/v1/finance/search?q=${t}&newsCount=4&quotesCount=0&enableFuzzyQuery=false`)
           .catch(() => null)
       );
       const pages = await Promise.all(searches);
@@ -1014,8 +1018,10 @@
             date: n.providerPublishTime ? new Date(n.providerPublishTime * 1000).toString() : '' });
         }
       }
-      // Sort newest-first and return top 5
+      // Sort newest-first, filter to semiconductor-relevant headlines
       results.sort((a, b) => new Date(b.date) - new Date(a.date));
+      const filtered = results.filter(n => isSemiNews(n.title));
+      if (filtered.length >= 3) return filtered.slice(0, 5);
       if (results.length >= 3) return results.slice(0, 5);
     } catch(e) {}
 
@@ -1029,9 +1035,11 @@
       const res = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${rssEncoded}&count=5`, { signal: ctrl.signal });
       clearTimeout(timer);
       const data = await res.json();
-      if (data.status === 'ok' && data.items?.length) return data.items.slice(0, 5).map(n => ({
-        title: (n.title ?? '').trim(), link: n.link ?? '#', date: n.pubDate ?? '',
-      })).filter(i => i.title);
+      if (data.status === 'ok' && data.items?.length) {
+        const items = data.items.map(n => ({ title: (n.title ?? '').trim(), link: n.link ?? '#', date: n.pubDate ?? '' })).filter(i => i.title);
+        const filtered = items.filter(n => isSemiNews(n.title));
+        return (filtered.length >= 3 ? filtered : items).slice(0, 5);
+      }
     } catch(e) {}
 
     // Strategy 3: RSS XML via proxy with strict HTML detection
@@ -1050,11 +1058,13 @@
         const doc = new DOMParser().parseFromString(t, 'text/xml');
         const items = Array.from(doc.querySelectorAll('item')).slice(0, 5);
         if (!items.length) continue;
-        return items.map(el => ({
+        const parsed = items.map(el => ({
           title: el.querySelector('title')?.textContent?.trim() ?? '',
           link:  el.querySelector('link')?.textContent?.trim() ?? '#',
           date:  el.querySelector('pubDate')?.textContent ?? '',
         })).filter(i => i.title);
+        const filtered = parsed.filter(n => isSemiNews(n.title));
+        return (filtered.length >= 3 ? filtered : parsed).slice(0, 5);
       } catch(e) { clearTimeout(timer); }
     }
 
@@ -1096,19 +1106,35 @@
     const tickers = ALL_ITEMS.map(h => h.ticker).join(',');
 
     try {
-      // Start peak-date fetch immediately in parallel with quote fetch
+      // Start peak-date fetch and chart API in parallel with quote fetch
+      // Chart API gives accurate extended-hours via minute candles; run it always
       const peakDatesPromise = fetchPeakDates(ALL_ITEMS.map(h => h.ticker));
+      const chartPromise = fetchViaChartAPI().catch(e => { console.warn('Chart API:', e.message); return null; });
 
       let results;
       try {
         results = await fetchViaCrumb(tickers);
       } catch (e1) {
         console.warn('Crumb failed:', e1.message);
-        try {
-          results = await fetchViaChartAPI();
-        } catch (e2) {
-          throw new Error(`Crumb: ${e1.message} | Chart: ${e2.message}`);
-        }
+        results = await chartPromise;
+        if (!results) throw new Error(`Crumb: ${e1.message} | Chart API also failed`);
+      }
+
+      // Overlay chart API extended-hours onto crumb results — chart candles are more accurate
+      const chartResults = await chartPromise;
+      if (chartResults && results !== chartResults) {
+        const chartMap = {};
+        chartResults.forEach(q => { chartMap[q.symbol] = q; });
+        results.forEach(q => {
+          const cq = chartMap[q.symbol];
+          if (!cq) return;
+          q.postMarketPrice = cq.postMarketPrice;
+          q.postMarketChange = cq.postMarketChange;
+          q.postMarketChangePercent = cq.postMarketChangePercent;
+          q.preMarketPrice = cq.preMarketPrice;
+          q.preMarketChange = cq.preMarketChange;
+          q.preMarketChangePercent = cq.preMarketChangePercent;
+        });
       }
 
       // Merge peak dates (provides date + validates high value)
@@ -1120,6 +1146,10 @@
           if (q.fiftyTwoWeekHighDate == null) q.fiftyTwoWeekHighDate = pd.date;
           if (q.fiftyTwoWeekHigh     == null) q.fiftyTwoWeekHigh     = pd.high;
           if (q.fiftyTwoWeekLow      == null) q.fiftyTwoWeekLow      = pd.low;
+        }
+        // Compute % from 52-week high if not returned by quote API
+        if (q.fiftyTwoWeekHighChangePercent == null && q.fiftyTwoWeekHigh != null && q.regularMarketPrice != null) {
+          q.fiftyTwoWeekHighChangePercent = ((q.regularMarketPrice - q.fiftyTwoWeekHigh) / q.fiftyTwoWeekHigh) * 100;
         }
       });
 
