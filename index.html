@@ -1032,7 +1032,7 @@
   async function fetchViaCrumb(tickers) {
     const crumb = await proxyFetch('https://query2.finance.yahoo.com/v1/test/getcrumb', true);
     if (!crumb || crumb.length < 3 || crumb.startsWith('<')) throw new Error('bad crumb: ' + crumb.slice(0, 30));
-    const url = `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${tickers}&fields=${FIELDS}&crumb=${encodeURIComponent(crumb)}`;
+    const url = `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${tickers}&fields=${FIELDS}&crumb=${encodeURIComponent(crumb)}&includePrePost=true&_=${Date.now()}`;
     const data = await proxyFetch(url);
     const results = data?.quoteResponse?.result || [];
     if (results.length === 0) throw new Error('empty quote results');
@@ -1041,7 +1041,7 @@
 
   // API tokens — stored in localStorage so no code editing is needed.
   // Click ⚙ in the header to set your Finnhub token (free at finnhub.io).
-  let FINNHUB_TOKEN   = localStorage.getItem('finnhub_token')   || 'd76d9shr01qm4b7tru90d76d9shr01qm4b7tru9g';
+  let FINNHUB_TOKEN   = localStorage.getItem('finnhub_token')   || '';
   let STOCKDATA_TOKEN = localStorage.getItem('stockdata_token') || '';
 
   function openSettings() {
@@ -1404,7 +1404,10 @@
       }
       results.forEach(q => {
         const live    = liveQuotes[q.symbol];
-        const sources = [finnhubEH[q.symbol], stockdataEH[q.symbol], live, nasdaqEH[q.symbol], yahooEH[q.symbol], chartMap[q.symbol]];
+        // Priority: Finnhub (CORS-native) > StockData (CORS-native) > WebSocket (live)
+        //          > Chart API (Yahoo-native, includePrePost=true, cache-busted)
+        //          > NASDAQ (proxied, updates slowly) > Yahoo EH (proxied)
+        const sources = [finnhubEH[q.symbol], stockdataEH[q.symbol], live, chartMap[q.symbol], nasdaqEH[q.symbol], yahooEH[q.symbol]];
         const postSrc = sources.find(s => s?.postMarketPrice != null);
         const preSrc  = sources.find(s => s?.preMarketPrice  != null);
         if (postSrc) {
