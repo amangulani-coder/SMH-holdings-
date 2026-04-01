@@ -220,10 +220,24 @@
       margin: 12px 0;
     }
 
-    .ah-section {
+    .ext-hours {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .ext-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 6px;
+    }
+
+    .ext-left {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0;
     }
 
     .ah-label {
@@ -234,8 +248,19 @@
     }
 
     .ah-price {
-      font-size: 18px;
+      font-size: 17px;
       font-weight: 700;
+    }
+
+    .ah-sub {
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    .ext-no-data {
+      font-size: 12px;
+      color: var(--muted);
+      font-style: italic;
     }
 
     .change-badge {
@@ -691,37 +716,16 @@
     if (!card) return;
 
     const regularPrice = q.regularMarketPrice;
-    const ahPrice = q.postMarketPrice;
-    const ahChange = q.postMarketChange;
+    const ahPrice    = q.postMarketPrice;
+    const ahChange   = q.postMarketChange;
     const ahChangePct = q.postMarketChangePercent;
-
-    // Also check pre-market
-    const prePrice = q.preMarketPrice;
-    const preChange = q.preMarketChange;
+    const prePrice   = q.preMarketPrice;
+    const preChange  = q.preMarketChange;
     const preChangePct = q.preMarketChangePercent;
 
-    const status = getMarketStatus();
-    let showPrice, showChange, showChangePct, sessionLabel;
-
-    let noAHData = false;
-    if (status === 'pre' && prePrice != null) {
-      showPrice = prePrice;
-      showChange = preChange;
-      showChangePct = preChangePct;
-      sessionLabel = 'Pre-Market';
-    } else if (ahPrice != null) {
-      showPrice = ahPrice;
-      showChange = ahChange;
-      showChangePct = ahChangePct;
-      sessionLabel = 'After Hours';
-    } else {
-      noAHData = true;
-      sessionLabel = status === 'pre' ? 'Pre-Market' : 'After Hours';
-    }
-
-    const dir = noAHData ? 'neutral' : (showChange > 0 ? 'up' : showChange < 0 ? 'down' : 'neutral');
-    const arrow = noAHData ? '–' : (showChange > 0 ? '▲' : showChange < 0 ? '▼' : '–');
-    const sign = noAHData ? '' : (showChange > 0 ? '+' : '');
+    // Card border direction driven by most recent extended-hours move, else regular close
+    const ahDir  = ahChange  > 0 ? 'up' : ahChange  < 0 ? 'down' : 'neutral';
+    const preDir = preChange > 0 ? 'up' : preChange < 0 ? 'down' : 'neutral';
 
     // Regular close day change
     const regChange = q.regularMarketChange;
@@ -775,8 +779,33 @@
         ${peakDateStr ? `<div class="range52-peak-date">Peaked ${peakDateStr}</div>` : ''}
       </div>` : '';
 
-    const cardDir = noAHData ? regDir : dir;
+    // Border colour: prefer AH, then pre, then regular
+    const cardDir = ahPrice != null ? ahDir : prePrice != null ? preDir : regDir;
     card.className = `card ${cardDir}${h.etf ? ' etf-card' : ''}${h.kr ? ' etf-card' : ''}`;
+
+    // Helper to build one extended-hours row
+    function extRow(label, price, change, changePct) {
+      if (price == null) return `
+        <div class="ext-row">
+          <div class="ext-left">
+            <div class="ah-label">${label}</div>
+            <span class="ext-no-data">No data available</span>
+          </div>
+        </div>`;
+      const d = change > 0 ? 'up' : change < 0 ? 'down' : 'neutral';
+      const a = change > 0 ? '▲' : change < 0 ? '▼' : '–';
+      const s = change > 0 ? '+' : '';
+      return `
+        <div class="ext-row">
+          <div class="ext-left">
+            <div class="ah-label">${label}</div>
+            <div class="ah-price">${fmtP(price)}</div>
+            <div class="ah-sub">${s}${fmtP(change)} from close</div>
+          </div>
+          <span class="change-badge ${d}">${a} ${s}${fmt(changePct, 2)}%</span>
+        </div>`;
+    }
+
     card.innerHTML = `
       <div class="card-header">
         <span class="ticker">${h.ticker}</span>
@@ -794,23 +823,9 @@
         <div style="font-size:11px;color:var(--muted);margin-top:2px">${regSign}${fmtP(regChange)} today</div>
       </div>
       <hr class="divider"/>
-      <div class="ah-section">
-        ${noAHData ? `
-        <div>
-          <div class="ah-label">${sessionLabel}</div>
-          <div class="ah-price" style="color:var(--muted);font-size:14px">No data yet</div>
-        </div>
-        <span class="change-badge neutral">– –%</span>
-        ` : `
-        <div>
-          <div class="ah-label">${sessionLabel}</div>
-          <div class="ah-price">${fmtP(showPrice)}</div>
-          <div style="font-size:11px;color:var(--muted);margin-top:2px">${sign}${fmtP(showChange)} from close</div>
-        </div>
-        <span class="change-badge ${dir}">
-          ${arrow} ${sign}${fmt(showChangePct, 2)}%
-        </span>
-        `}
+      <div class="ext-hours">
+        ${extRow('After Hours',  ahPrice,  ahChange,  ahChangePct)}
+        ${extRow('Pre-Market',   prePrice, preChange, preChangePct)}
       </div>
       ${weightSection}
       ${rangeSection}`;
@@ -883,12 +898,18 @@
         if (!r?.timestamp) return;
         const ts = r.timestamp;
         const highs = r.indicators?.quote?.[0]?.high;
+        const lows  = r.indicators?.quote?.[0]?.low;
         if (!highs) return;
-        let maxVal = -Infinity, maxIdx = -1;
+        let maxVal = -Infinity, maxIdx = -1, minVal = Infinity;
         for (let i = 0; i < highs.length; i++) {
           if (highs[i] != null && highs[i] > maxVal) { maxVal = highs[i]; maxIdx = i; }
+          if (lows?.[i]  != null && lows[i]  < minVal)  minVal = lows[i];
         }
-        if (maxIdx >= 0) peakMap[ticker] = { high: maxVal, date: new Date(ts[maxIdx] * 1000) };
+        if (maxIdx >= 0) peakMap[ticker] = {
+          high: maxVal,
+          low:  minVal < Infinity ? minVal : null,
+          date: new Date(ts[maxIdx] * 1000),
+        };
       } catch(e) {}
     }));
     return peakMap;
@@ -907,43 +928,41 @@
     return results;
   }
 
-  // Strategy 2: per-symbol v8 chart API using 1-year daily data
-  // Gets current prices, post/pre-market, and 52-week high/low/peak-date in one request
+  // Strategy 2: per-symbol v8 chart API — 1d/1m with pre+post market OHLCV extraction
   async function fetchViaChartAPI() {
     const fetches = ALL_ITEMS.map(async h => {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${h.ticker}?interval=1d&range=1y&includePrePost=true`;
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${h.ticker}?interval=1m&range=1d&includePrePost=true`;
       try {
         const data = await proxyFetch(url);
         const result = data?.chart?.result?.[0];
-        const meta = result?.meta;
+        const meta   = result?.meta;
         if (!meta?.regularMarketPrice) return null;
         const prevClose = meta.chartPreviousClose || meta.regularMarketPrice;
         const regChange = meta.regularMarketPrice - prevClose;
 
-        const postPrice = meta.postMarketPrice ?? null;
-        const prePrice  = meta.preMarketPrice  ?? null;
+        const ts     = result?.timestamp ?? [];
+        const closes = result?.indicators?.quote?.[0]?.close ?? [];
+
+        // Helper: scan OHLCV for last valid close within a trading period window
+        function lastCloseIn(period) {
+          if (!period) return null;
+          for (let j = ts.length - 1; j >= 0; j--) {
+            if (ts[j] >= period.start && ts[j] <= period.end && closes[j] != null)
+              return closes[j];
+          }
+          return null;
+        }
+
+        // Post-market: prefer meta field, fall back to OHLCV scan
+        let postPrice = meta.postMarketPrice ?? null;
+        if (postPrice == null) postPrice = lastCloseIn(meta.tradingPeriods?.post?.[0]?.[0]);
+
+        // Pre-market: prefer meta field, fall back to OHLCV scan
+        let prePrice = meta.preMarketPrice ?? null;
+        if (prePrice == null) prePrice = lastCloseIn(meta.tradingPeriods?.pre?.[0]?.[0]);
+
         const postChange = postPrice != null ? postPrice - meta.regularMarketPrice : null;
         const preChange  = prePrice  != null ? prePrice  - meta.regularMarketPrice : null;
-
-        // Scan OHLCV for 52-week high/low and peak date
-        const ts    = result?.timestamp ?? [];
-        const ohlcv = result?.indicators?.quote?.[0] ?? {};
-        const highs = ohlcv.high ?? [];
-        const lows  = ohlcv.low  ?? [];
-        let high52 = meta.fiftyTwoWeekHigh ?? null;
-        let low52  = meta.fiftyTwoWeekLow  ?? null;
-        let maxHigh = -Infinity, maxIdx = -1;
-        let minLow  =  Infinity;
-        for (let i = 0; i < highs.length; i++) {
-          if (highs[i] != null && highs[i] > maxHigh) { maxHigh = highs[i]; maxIdx = i; }
-          if (lows[i]  != null && lows[i]  < minLow)   minLow  = lows[i];
-        }
-        if (high52 == null && maxIdx >= 0) high52 = maxHigh;
-        if (low52  == null && minLow < Infinity) low52 = minLow;
-        const highDate = maxIdx >= 0 ? new Date(ts[maxIdx] * 1000) : null;
-
-        const highChange    = high52 != null ? meta.regularMarketPrice - high52 : null;
-        const highChangePct = high52 != null ? ((meta.regularMarketPrice - high52) / high52) * 100 : null;
 
         return {
           symbol: h.ticker,
@@ -956,11 +975,6 @@
           preMarketPrice: prePrice,
           preMarketChange: preChange,
           preMarketChangePercent: preChange != null ? (preChange / meta.regularMarketPrice) * 100 : null,
-          fiftyTwoWeekHigh: high52,
-          fiftyTwoWeekLow: low52,
-          fiftyTwoWeekHighChange: highChange,
-          fiftyTwoWeekHighChangePercent: highChangePct,
-          fiftyTwoWeekHighDate: highDate,
         };
       } catch (e) { return null; }
     });
@@ -1065,7 +1079,8 @@
         const pd = peakDates[q.symbol];
         if (pd) {
           if (q.fiftyTwoWeekHighDate == null) q.fiftyTwoWeekHighDate = pd.date;
-          if (q.fiftyTwoWeekHigh == null) q.fiftyTwoWeekHigh = pd.high;
+          if (q.fiftyTwoWeekHigh     == null) q.fiftyTwoWeekHigh     = pd.high;
+          if (q.fiftyTwoWeekLow      == null) q.fiftyTwoWeekLow      = pd.low;
         }
       });
 
