@@ -136,22 +136,26 @@
       margin: 0 auto;
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-      gap: 14px;
+      gap: 0;
+      border-top: 1px solid var(--border);
+      border-left: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
     }
 
     .card {
       background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 12px;
+      border-right: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      border-radius: 0;
       padding: 18px;
-      transition: border-color 0.2s, transform 0.1s;
+      transition: background 0.2s, transform 0.1s;
       position: relative;
       overflow: hidden;
     }
 
     .card:hover {
-      border-color: var(--accent);
-      transform: translateY(-1px);
+      background: var(--surface2);
     }
 
     .card.up { border-left: 3px solid var(--green); }
@@ -284,9 +288,9 @@
       text-transform: uppercase;
       letter-spacing: 1px;
       color: var(--muted);
-      padding: 4px 2px;
+      padding: 10px 14px;
+      background: var(--surface2);
       border-bottom: 1px solid var(--border);
-      margin-bottom: 2px;
     }
 
     .etf-badge {
@@ -297,10 +301,9 @@
 
     .etf-card {
       background: #1a1f32;
-      border-color: #3a4060;
     }
 
-    .etf-card:hover { border-color: var(--accent); }
+    .etf-card:hover { background: #232a42; }
 
     .weight-bar {
       margin-top: 12px;
@@ -628,7 +631,7 @@
       real-time pre/post-market data directly.<br><br>
       Get your free token (no credit card) at
       <a href="https://finnhub.io" target="_blank" rel="noopener">finnhub.io</a>
-      â Dashboard â API key.
+      → Dashboard → API key.
     </p>
     <input class="modal-input" id="token-input" type="text"
            placeholder="Paste Finnhub API token here" autocomplete="off" spellcheck="false"/>
@@ -650,10 +653,10 @@
   <div class="header-right">
     <div id="market-status" class="market-status status-closed">
       <span class="dot"></span>
-      <span id="status-text">â</span>
+      <span id="status-text">–</span>
     </div>
     <span id="last-updated"></span>
-    <button class="settings-btn" onclick="openSettings()" title="Configure API key for live data">â</button>
+    <button class="settings-btn" onclick="openSettings()" title="Configure API key for live data">⚙</button>
     <button id="refresh-btn" onclick="loadData()">
       <div class="spinner" id="spinner"></div>
       <span id="refresh-label">Refresh</span>
@@ -680,23 +683,23 @@
 <div class="summary-bar" id="summary-bar" style="display:none">
   <div class="summary-item">
     <span class="summary-label">Gainers</span>
-    <span class="summary-value" id="sum-gainers" style="color:var(--green)">â</span>
+    <span class="summary-value" id="sum-gainers" style="color:var(--green)">–</span>
   </div>
   <div class="summary-item">
     <span class="summary-label">Losers</span>
-    <span class="summary-value" id="sum-losers" style="color:var(--red)">â</span>
+    <span class="summary-value" id="sum-losers" style="color:var(--red)">–</span>
   </div>
   <div class="summary-item">
     <span class="summary-label">Avg AH Change</span>
-    <span class="summary-value" id="sum-avg">â</span>
+    <span class="summary-value" id="sum-avg">–</span>
   </div>
   <div class="summary-item">
     <span class="summary-label">Best AH</span>
-    <span class="summary-value" id="sum-best" style="color:var(--green)">â</span>
+    <span class="summary-value" id="sum-best" style="color:var(--green)">–</span>
   </div>
   <div class="summary-item">
     <span class="summary-label">Worst AH</span>
-    <span class="summary-value" id="sum-worst" style="color:var(--red)">â</span>
+    <span class="summary-value" id="sum-worst" style="color:var(--red)">–</span>
   </div>
 </div>
 
@@ -733,12 +736,12 @@
   const MAX_WEIGHT = Math.max(...HOLDINGS.map(h => h.weight));
 
   function fmt(n, decimals = 2) {
-    if (n == null || isNaN(n)) return 'â';
+    if (n == null || isNaN(n)) return '–';
     return n.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
   }
 
   function fmtPrice(n) {
-    if (n == null || isNaN(n)) return 'â';
+    if (n == null || isNaN(n)) return '–';
     return '$' + fmt(n, 2);
   }
 
@@ -785,7 +788,7 @@
         grid.innerHTML += `<div class="section-header" id="section-holdings">Top 10 Holdings</div>`;
       }
       if (i === ETFS.length + HOLDINGS.length) {
-        grid.innerHTML += `<div class="section-header" id="section-kr">Korean Semiconductors (KRX Â· KRW)</div>`;
+        grid.innerHTML += `<div class="section-header" id="section-kr">Korean Semiconductors (KRX · KRW)</div>`;
       }
       const rankBadge = h.etf
         ? `<span class="rank etf-badge">ETF</span>`
@@ -842,7 +845,7 @@
     const regChangePct = q.regularMarketChangePercent;
     const regDir = regChange > 0 ? 'up' : regChange < 0 ? 'down' : 'neutral';
     const regSign = regChange > 0 ? '+' : '';
-    const regArrow = regChange > 0 ? 'â²' : regChange < 0 ? 'â¼' : 'â';
+    const regArrow = regChange > 0 ? '▲' : regChange < 0 ? '▼' : '–';
 
     const rankBadge = h.etf
       ? `<span class="rank etf-badge">ETF</span>`
@@ -856,7 +859,7 @@
       </div>`;
 
     const fmtP = h.kr
-      ? n => (n == null || isNaN(n) ? 'â' : 'â©' + Math.round(n).toLocaleString('en-US'))
+      ? n => (n == null || isNaN(n) ? '–' : '₩' + Math.round(n).toLocaleString('en-US'))
       : fmtPrice;
 
     // 52-week range
@@ -875,7 +878,7 @@
         <div class="range52-header">
           <span class="range52-title">52-Week Range</span>
           ${fromHighPct != null ? `<span class="range52-badge${atHigh ? ' at-high' : ''}">
-            ${atHigh ? 'â² At 52-wk high' : 'â¼ ' + fmt(Math.abs(fromHighPct), 1) + '% from peak'}
+            ${atHigh ? '▲ At 52-wk high' : '▼ ' + fmt(Math.abs(fromHighPct), 1) + '% from peak'}
           </span>` : ''}
         </div>
         <div class="range52-track">
@@ -900,11 +903,11 @@
           <div class="ext-left">
             <div class="ah-label">${label}</div>
             <span class="ext-no-data">${noDataMsg}</span>
-            ${!FINNHUB_TOKEN && !h.kr ? `<div class="api-hint"><a href="#" onclick="openSettings();return false;">â Add API key</a> for live data</div>` : ''}
+            ${!FINNHUB_TOKEN && !h.kr ? `<div class="api-hint"><a href="#" onclick="openSettings();return false;">⚙ Add API key</a> for live data</div>` : ''}
           </div>
         </div>`;
       const d = change > 0 ? 'up' : change < 0 ? 'down' : 'neutral';
-      const a = change > 0 ? 'â²' : change < 0 ? 'â¼' : 'â';
+      const a = change > 0 ? '▲' : change < 0 ? '▼' : '–';
       const s = change > 0 ? '+' : '';
       return `
         <div class="ext-row">
@@ -966,7 +969,7 @@
     document.getElementById('summary-bar').style.display = 'flex';
   }
 
-  // corsproxy.io is first â it's a true passthrough with no server-side caching.
+  // corsproxy.io is first — it's a true passthrough with no server-side caching.
   // allorigins.win caches for 2 min and is now last resort only.
   const PROXIES = [
     u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
@@ -1039,8 +1042,8 @@
     return results;
   }
 
-  // API tokens â stored in localStorage so no code editing is needed.
-  // Click â in the header to set your Finnhub token (free at finnhub.io).
+  // API tokens — stored in localStorage so no code editing is needed.
+  // Click ⚙ in the header to set your Finnhub token (free at finnhub.io).
   let FINNHUB_TOKEN   = localStorage.getItem('finnhub_token')   || '';
   let STOCKDATA_TOKEN = localStorage.getItem('stockdata_token') || '';
 
@@ -1119,7 +1122,7 @@
       return map;
     } catch(e) { clearTimeout(timer); return {}; }
   }
-  // âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+  // ─────────────────────────────────────────────────────────────────────────────
 
   // Parse NASDAQ API price strings like "$388.04", "+4.64", "-3.62%"
   const nqParse = s => {
@@ -1129,7 +1132,7 @@
     return isNaN(n) ? null : (neg ? -n : n);
   };
 
-  // Primary extended-hours source: NASDAQ API â structured primaryData/secondaryData, no API key needed
+  // Primary extended-hours source: NASDAQ API — structured primaryData/secondaryData, no API key needed
   // Works for all US-listed stocks (including NYSE, NASDAQ). Korean stocks excluded (KRX, not applicable).
   async function fetchExtendedHoursViaNasdaq() {
     const map = {};
@@ -1204,7 +1207,7 @@
     return map;
   }
 
-  // Fallback: per-symbol v8 chart API â 1d/1m with pre+post market OHLCV extraction
+  // Fallback: per-symbol v8 chart API — 1d/1m with pre+post market OHLCV extraction
   async function fetchViaChartAPI() {
     const fetches = ALL_ITEMS.map(async h => {
       // Cache-bust so proxies (allorigins etc.) cannot serve a stale cached response
@@ -1290,7 +1293,7 @@
   function isSemiNews(title) { return SEMI_RE.test(title); }
 
   async function fetchNews() {
-    // Strategy 1: Yahoo Finance search API per ticker â deduplicated, ticker-specific headlines
+    // Strategy 1: Yahoo Finance search API per ticker — deduplicated, ticker-specific headlines
     try {
       const seen = new Set();
       const results = [];
@@ -1315,7 +1318,7 @@
       if (results.length >= 3) return results.slice(0, 5);
     } catch(e) {}
 
-    // Strategy 2: rss2json.com with all SMH tickers â returns JSON, CORS-enabled
+    // Strategy 2: rss2json.com with all SMH tickers — returns JSON, CORS-enabled
     try {
       const rssEncoded = encodeURIComponent(
         `https://feeds.finance.yahoo.com/rss/2.0/headline?s=${NEWS_TICKERS}&region=US&lang=en-US`
@@ -1365,12 +1368,12 @@
     const list = document.getElementById('news-list');
     if (!list) return;
     if (!items.length) {
-      list.innerHTML = `<li style="font-size:12px;color:var(--muted)">News unavailable â check back later.</li>`;
+      list.innerHTML = `<li style="font-size:12px;color:var(--muted)">News unavailable — check back later.</li>`;
       return;
     }
     list.innerHTML = items.map(item => `
       <li class="news-item">
-        <span class="news-bullet">â</span>
+        <span class="news-bullet">●</span>
         <a class="news-link" href="${item.link}" target="_blank" rel="noopener">${item.title}</a>
         ${item.date ? `<span class="news-age">${timeAgo(item.date)}</span>` : ''}
       </li>`).join('');
@@ -1384,13 +1387,13 @@
 
     btn.disabled = true;
     spinner.style.display = 'block';
-    label.textContent = 'Loadingâ¦';
+    label.textContent = 'Loading…';
     errBanner.style.display = 'none';
 
     buildSkeletons();
     updateMarketStatus(getMarketStatus());
 
-    // Fetch news in parallel â renders independently of price data
+    // Fetch news in parallel — renders independently of price data
     fetchNews().then(renderNews).catch(() => renderNews([]));
 
     const tickers = ALL_ITEMS.map(h => h.ticker).join(',');
@@ -1404,7 +1407,7 @@
       const yahooEhPromise     = fetchExtendedHoursViaYahoo().catch(e => { console.warn('YahooEH:', e.message); return {}; });
       const chartPromise       = fetchViaChartAPI().catch(e => { console.warn('Chart API:', e.message); return null; });
 
-      // Regular close data: crumb (batch v7) â chart API (per-symbol v8)
+      // Regular close data: crumb (batch v7) → chart API (per-symbol v8)
       let results;
       try {
         results = await fetchViaCrumb(tickers);
@@ -1470,7 +1473,7 @@
         'Updated ' + new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
     } catch (err) {
-      errBanner.textContent = `Failed to load data â ${err.message}`;
+      errBanner.textContent = `Failed to load data — ${err.message}`;
       errBanner.style.display = 'block';
       console.error(err);
     } finally {
@@ -1480,8 +1483,8 @@
     }
   }
 
-  // ââ Yahoo Finance WebSocket streamer ââââââââââââââââââââââââââââââââââââââââ
-  // Connects to the same real-time feed used by finance.yahoo.com â no proxy,
+  // ── Yahoo Finance WebSocket streamer ────────────────────────────────────────
+  // Connects to the same real-time feed used by finance.yahoo.com — no proxy,
   // no CORS issues, no caching. Messages are protobuf-encoded binary frames.
   const liveQuotes = {};   // keyed by ticker; holds latest extended-hours data
   let   streamerWs  = null;
@@ -1544,7 +1547,7 @@
         } else if (wt === 2) { // length-delimited (string)
           const len = readVarint();
           if (fn === 1) q.id = readStr(len); else pos += len;
-        } else if (wt === 1) { // 64-bit â skip
+        } else if (wt === 1) { // 64-bit — skip
           pos += 8;
         } else break;
       } catch(e) { break; }
@@ -1584,7 +1587,7 @@
       streamerWs.onclose = () => { streamerWs = null; setTimeout(startStreamer, 15000); };
     } catch(e) { streamerWs = null; }
   }
-  // ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+  // ────────────────────────────────────────────────────────────────────────────
 
   loadData();
   startStreamer();
