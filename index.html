@@ -257,6 +257,20 @@
       color: var(--muted);
     }
 
+    .src-badge {
+      display: inline-block;
+      margin-top: 4px;
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 6px;
+    }
+
     .ext-no-data {
       font-size: 12px;
       color: var(--muted);
@@ -655,7 +669,7 @@
     <span id="last-updated"></span>
     <button class="settings-btn" onclick="openSettings()" title="Configure API key for live data">⚙</button>
     <button id="refresh-btn" onclick="loadData()">
-      <div class="spinner" id="spinner"></div>
+      <div class="spinner" id="spinner" role="status" aria-live="polite" aria-label="Loading data"></div>
       <span id="refresh-label">Refresh</span>
     </button>
   </div>
@@ -743,14 +757,14 @@
   }
 
   function getMarketStatus() {
-    const now = new Date();
-    // Convert to ET
-    const etOffset = -4; // EDT; use -5 for EST
-    const utc = now.getTime() + now.getTimezoneOffset() * 60000;
-    const et = new Date(utc + 3600000 * etOffset);
-    const day = et.getDay(); // 0=Sun, 6=Sat
-    const h = et.getHours();
-    const m = et.getMinutes();
+    // DST-safe Eastern Time via Intl (handles EDT/EST automatically)
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York', weekday: 'short', hour: 'numeric', minute: 'numeric', hour12: false,
+    }).formatToParts(new Date());
+    const get = t => parts.find(p => p.type === t)?.value;
+    const day = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].indexOf(get('weekday'));
+    const h = parseInt(get('hour'), 10) % 24;
+    const m = parseInt(get('minute'), 10);
     const mins = h * 60 + m;
 
     if (day === 0 || day === 6) return 'closed';
@@ -777,6 +791,10 @@
 
   function buildSkeletons() {
     const grid = document.getElementById('grid');
+    // Keep existing cards on auto-refresh — only build skeletons on first load.
+    // renderCard() replaces card contents in place, so no wipe is needed.
+    // .regular-price only exists once real data has been rendered.
+    if (grid.querySelector('.card .regular-price')) return;
     grid.innerHTML = '';
     // Insert section headers
     grid.innerHTML += `<div class="section-header" id="section-etfs">ETFs</div>`;
@@ -894,7 +912,7 @@
     card.className = `card ${cardDir}${h.etf ? ' etf-card' : ''}${h.kr ? ' etf-card' : ''}`;
 
     // Helper to build one extended-hours row
-    function extRow(label, price, change, changePct, noDataMsg) {
+    function extRow(label, price, change, changePct, noDataMsg, source) {
       if (price == null) return `
         <div class="ext-row">
           <div class="ext-left">
@@ -912,6 +930,7 @@
             <div class="ah-label">${label}</div>
             <div class="ah-price">${fmtP(price)}</div>
             <div class="ah-sub">${s}${fmtP(change)} from close</div>
+            ${source ? `<div class="src-badge">${source}</div>` : ''}
           </div>
           <span class="change-badge ${d}">${a} ${s}${fmt(changePct, 2)}%</span>
         </div>`;
@@ -935,7 +954,7 @@
       </div>
       <hr class="divider"/>
       <div class="ext-hours">
-        ${extRow('After Hours', ahPrice,  ahChange,  ahChangePct,  'No after-hours data')}
+        ${extRow('After Hours', ahPrice,  ahChange,  ahChangePct,  'No after-hours data', q.postMarketSource)}
         ${extRow('Pre-Market',  prePrice, preChange, preChangePct, 'Pre-market trading has not started')}
       </div>
       ${weightSection}
@@ -946,8 +965,8 @@
     const validQuotes = quotes.filter(q => q && q.postMarketChangePercent != null);
     if (validQuotes.length === 0) return;
 
-    const gainers = validQuotes.filter(q => q.postMarketChange > 0).length;
-    const losers  = validQuotes.filter(q => q.postMarketChange < 0).length;
+    const gainers = validQuotes.filter(q => q.postMarketChangePercent > 0).length;
+    const losers  = validQuotes.filter(q => q.postMarketChangePercent < 0).length;
     const avg = validQuotes.reduce((s, q) => s + q.postMarketChangePercent, 0) / validQuotes.length;
 
     const best  = validQuotes.reduce((a, b) => b.postMarketChangePercent > a.postMarketChangePercent ? b : a);
@@ -1426,12 +1445,15 @@
         //          > Chart API (Yahoo-native, includePrePost=true, cache-busted)
         //          > NASDAQ (proxied, updates slowly) > Yahoo EH (proxied)
         const sources = [finnhubEH[q.symbol], stockdataEH[q.symbol], live, chartMap[q.symbol], nasdaqEH[q.symbol], yahooEH[q.symbol]];
-        const postSrc = sources.find(s => s?.postMarketPrice != null);
+        const srcNames = ['Finnhub · live', 'StockData · live', 'Yahoo stream · live', 'Yahoo chart', 'NASDAQ · delayed', 'Yahoo · delayed'];
+        const postIdx = sources.findIndex(s => s?.postMarketPrice != null);
+        const postSrc = postIdx >= 0 ? sources[postIdx] : null;
         const preSrc  = sources.find(s => s?.preMarketPrice  != null);
         if (postSrc) {
           q.postMarketPrice         = postSrc.postMarketPrice;
           q.postMarketChange        = postSrc.postMarketChange;
           q.postMarketChangePercent = postSrc.postMarketChangePercent;
+          q.postMarketSource        = srcNames[postIdx];
         }
         if (preSrc) {
           q.preMarketPrice          = preSrc.preMarketPrice;
