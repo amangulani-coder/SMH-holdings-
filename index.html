@@ -38,31 +38,117 @@
       overflow-x: hidden;
     }
 
-    /* ── animated background orbs ── */
-    body::before, body::after {
+    /* ── animated background orbs (replaced by canvas, kept as fallback) ── */
+    body::before, body::after { display: none; }
+
+    /* ── canvas particle field ── */
+    #bg-canvas {
+      position: fixed; inset: 0;
+      width: 100%; height: 100%;
+      pointer-events: none; z-index: 0;
+    }
+
+    /* ── radar scan line ── */
+    #scan-line {
+      position: fixed; left: 0; right: 0; height: 1px;
+      background: linear-gradient(90deg, transparent 0%, rgba(124,110,245,0.0) 20%,
+        rgba(124,110,245,0.7) 50%, rgba(167,139,250,0.0) 80%, transparent 100%);
+      pointer-events: none; z-index: 2;
+      animation: scanDown 10s linear infinite;
+      box-shadow: 0 0 12px 2px rgba(124,110,245,0.4);
+    }
+    @keyframes scanDown {
+      0%   { top: -2px; opacity: 0; }
+      3%   { opacity: 1; }
+      97%  { opacity: 0.6; }
+      100% { top: 100vh; opacity: 0; }
+    }
+
+    /* ── scrolling ticker tape ── */
+    #ticker-wrap {
+      position: sticky; top: 0; z-index: 20;
+      overflow: hidden;
+      background: rgba(6,8,16,0.85);
+      border-bottom: 1px solid rgba(124,110,245,0.2);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      height: 34px;
+      display: flex; align-items: center;
+      margin-bottom: 24px;
+    }
+    #ticker-track {
+      display: flex;
+      white-space: nowrap;
+      animation: tickerScroll 40s linear infinite;
+      will-change: transform;
+    }
+    #ticker-track:hover { animation-play-state: paused; }
+    @keyframes tickerScroll {
+      0%   { transform: translateX(0); }
+      100% { transform: translateX(-50%); }
+    }
+    .tick-item {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 0 18px; border-right: 1px solid rgba(255,255,255,0.06);
+      font-size: 11px; font-weight: 600; letter-spacing: 0.2px;
+    }
+    .tick-sym  { color: rgba(255,255,255,0.55); }
+    .tick-px   { color: var(--text); }
+    .tick-chg.up   { color: var(--green); }
+    .tick-chg.down { color: var(--red); }
+    .tick-chg.flat { color: var(--muted); }
+
+    /* ── card 3-D tilt setup ── */
+    .cards-grid { perspective: 1200px; }
+    .card { transform-style: preserve-3d; will-change: transform; }
+
+    /* ── upgraded neon hover glow ── */
+    .card.up:hover {
+      border-color: rgba(16,233,122,0.55) !important;
+      box-shadow: 0 0 0 1px rgba(16,233,122,0.3),
+                  0 0 30px rgba(16,233,122,0.2),
+                  0 16px 50px rgba(0,0,0,0.5) !important;
+    }
+    .card.down:hover {
+      border-color: rgba(255,75,110,0.55) !important;
+      box-shadow: 0 0 0 1px rgba(255,75,110,0.3),
+                  0 0 30px rgba(255,75,110,0.2),
+                  0 16px 50px rgba(0,0,0,0.5) !important;
+    }
+
+    /* ── animated spinning border on hover ── */
+    @property --border-angle {
+      syntax: '<angle>'; inherits: false; initial-value: 0deg;
+    }
+    .card::before {
       content: '';
-      position: fixed;
-      border-radius: 50%;
-      pointer-events: none;
-      z-index: 0;
-      filter: blur(120px);
+      position: absolute; inset: -1px; border-radius: 19px;
+      background: conic-gradient(from var(--border-angle),
+        transparent 0%,
+        rgba(124,110,245,0.8) 15%,
+        rgba(167,139,250,0.4) 25%,
+        transparent 40%);
+      -webkit-mask: linear-gradient(#fff 0 0) content-box,
+                    linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      padding: 1px;
+      opacity: 0;
+      transition: opacity 0.3s;
     }
-    body::before {
-      width: 600px; height: 600px;
-      top: -200px; left: -100px;
-      background: radial-gradient(circle, rgba(124,110,245,0.15) 0%, transparent 70%);
-      animation: orbFloat 18s ease-in-out infinite alternate;
+    .card:hover::before {
+      opacity: 1;
+      animation: borderSpin 2.5s linear infinite;
     }
-    body::after {
-      width: 500px; height: 500px;
-      bottom: -150px; right: -100px;
-      background: radial-gradient(circle, rgba(16,233,122,0.10) 0%, transparent 70%);
-      animation: orbFloat 22s ease-in-out infinite alternate-reverse;
+    @keyframes borderSpin { to { --border-angle: 360deg; } }
+
+    /* ── price flash on data refresh ── */
+    @keyframes priceFlash {
+      0%   { color: inherit; }
+      25%  { color: #fff; text-shadow: 0 0 12px #fff; }
+      100% { color: inherit; }
     }
-    @keyframes orbFloat {
-      0%   { transform: translate(0, 0) scale(1); }
-      100% { transform: translate(60px, 40px) scale(1.15); }
-    }
+    .flash { animation: priceFlash 0.6s ease-out; }
 
     /* ── page wrapper above orbs ── */
     header, .error-banner, .news-section, .summary-bar,
@@ -638,6 +724,10 @@
   </style>
 </head>
 <body>
+
+<canvas id="bg-canvas"></canvas>
+<div id="scan-line"></div>
+<div id="ticker-wrap"><div id="ticker-track"></div></div>
 
 <!-- Settings modal -->
 <div class="modal-overlay" id="settings-modal">
@@ -1744,6 +1834,116 @@
   // Also run on initial page load
   setTimeout(applySessionFilter, 800);
 
+  // ── Canvas particle network ───────────────────────────────────────────────
+  (function() {
+    const canvas = document.getElementById('bg-canvas');
+    const ctx    = canvas.getContext('2d');
+    let W, H, pts = [];
+    const N = 70, MAX_DIST = 130;
+
+    function resize() {
+      W = canvas.width  = window.innerWidth;
+      H = canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    for (let i = 0; i < N; i++) {
+      pts.push({
+        x: Math.random() * W, y: Math.random() * H,
+        vx: (Math.random() - 0.5) * 0.28,
+        vy: (Math.random() - 0.5) * 0.28,
+        r:  Math.random() * 1.4 + 0.4,
+        a:  Math.random() * 0.5 + 0.1,
+        hue: Math.random() < 0.6 ? 250 : (Math.random() < 0.5 ? 160 : 0),
+      });
+    }
+
+    function frame() {
+      ctx.clearRect(0, 0, W, H);
+      for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
+        p.x += p.vx; p.y += p.vy;
+        if (p.x < 0) p.x = W; if (p.x > W) p.x = 0;
+        if (p.y < 0) p.y = H; if (p.y > H) p.y = 0;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fillStyle = `hsla(${p.hue},80%,75%,${p.a})`;
+        ctx.fill();
+        for (let j = i + 1; j < pts.length; j++) {
+          const q = pts[j];
+          const dx = p.x - q.x, dy = p.y - q.y;
+          const d  = Math.sqrt(dx*dx + dy*dy);
+          if (d < MAX_DIST) {
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y);
+            ctx.strokeStyle = `hsla(${p.hue},80%,75%,${0.18 * (1 - d / MAX_DIST)})`;
+            ctx.lineWidth = 0.6;
+            ctx.stroke();
+          }
+        }
+      }
+      requestAnimationFrame(frame);
+    }
+    frame();
+  })();
+
+  // ── Scrolling ticker tape ─────────────────────────────────────────────────
+  function buildTicker() {
+    const track = document.getElementById('ticker-track');
+    if (!track || !Object.keys(priceState).length) return;
+    const items = ALL_ITEMS.map(h => {
+      const d   = priceState[h.ticker]; if (!d) return '';
+      const px  = d.postMarketPrice || d.preMarketPrice || d.regularMarketPrice;
+      const pct = d.postMarketChangePercent ?? d.preMarketChangePercent ?? d.regularMarketChangePercent;
+      if (px == null) return '';
+      const dir  = pct == null ? 'flat' : pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat';
+      const sign = pct > 0 ? '+' : '';
+      const arrow = pct > 0 ? '▲' : pct < 0 ? '▼' : '';
+      const fmtPx = h.kr ? '₩' + Math.round(px).toLocaleString() : '$' + px.toFixed(2);
+      return `<span class="tick-item">
+        <span class="tick-sym">${h.ticker}</span>
+        <span class="tick-px">${fmtPx}</span>
+        <span class="tick-chg ${dir}">${arrow} ${sign}${pct != null ? pct.toFixed(2) + '%' : '–'}</span>
+      </span>`;
+    }).join('');
+    // Duplicate for seamless loop
+    track.innerHTML = items + items;
+  }
+
+  // ── 3-D card tilt on mouse move ───────────────────────────────────────────
+  function enableCardTilt() {
+    document.querySelectorAll('.card').forEach(card => {
+      if (card._tilt) return;
+      card._tilt = true;
+
+      card.addEventListener('mousemove', e => {
+        if (window.innerWidth < 520) return;
+        const r  = card.getBoundingClientRect();
+        const x  = (e.clientX - r.left)  / r.width  - 0.5;
+        const y  = (e.clientY - r.top)   / r.height - 0.5;
+        card.style.transition = 'box-shadow 0.25s, border-color 0.25s, opacity 0.55s';
+        card.style.transform  =
+          `perspective(700px) rotateY(${x * 10}deg) rotateX(${-y * 7}deg) translateZ(10px)`;
+      });
+
+      card.addEventListener('mouseleave', () => {
+        card.style.transition =
+          'transform 0.6s cubic-bezier(.22,1,.36,1), box-shadow 0.4s, border-color 0.25s, opacity 0.55s';
+        card.style.transform = 'perspective(700px) rotateY(0deg) rotateX(0deg) translateZ(0px)';
+      });
+    });
+  }
+
+  // ── Price flash on refresh ────────────────────────────────────────────────
+  function flashPrices() {
+    document.querySelectorAll('.regular-price, .ah-price').forEach(el => {
+      el.classList.remove('flash');
+      void el.offsetWidth;  // force reflow to restart animation
+      el.classList.add('flash');
+    });
+  }
+
   // ── Scroll entrance animations ─────────────────────────────────────────────
   const _io = new IntersectionObserver((entries) => {
     entries.forEach(entry => {
@@ -1755,7 +1955,6 @@
   }, { threshold: 0.08, rootMargin: '0px 0px -30px 0px' });
 
   function initScrollAnimations() {
-    // Stagger cards within each visible section
     let cardIdx = 0;
     document.querySelectorAll('.card, .section-header').forEach(el => {
       if (el.classList.contains('card')) {
@@ -1764,15 +1963,21 @@
       }
       _io.observe(el);
     });
+    enableCardTilt();
   }
 
-  // Re-run after each data load (new cards may have been created)
+  // Re-run after each data load
   const _origLoadForAnim = window.loadData;
   window.loadData = async function() {
     await _origLoadForAnim.apply(this, arguments);
-    setTimeout(initScrollAnimations, 50);
+    setTimeout(() => {
+      initScrollAnimations();
+      buildTicker();
+      flashPrices();
+    }, 80);
   };
   setTimeout(initScrollAnimations, 100);
+  setTimeout(buildTicker, 3000);  // build ticker once first data is loaded
 </script>
 </body>
 </html>
