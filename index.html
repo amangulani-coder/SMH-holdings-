@@ -303,6 +303,61 @@
       margin-bottom: 2px;
     }
 
+    /* ── SPARKLINE ── */
+    .spark-wrap {
+      margin: 10px 0 2px;
+      height: 38px;
+    }
+    .spark-wrap svg { display: block; width: 100%; height: 38px; }
+    .spark-line { fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .spark-line.up   { stroke: var(--green); }
+    .spark-line.down { stroke: var(--red); }
+    .spark-fill { opacity: 0.15; }
+    .spark-fill.up   { fill: var(--green); }
+    .spark-fill.down { fill: var(--red); }
+
+    /* ── TREEMAP ── */
+    #view-toggle {
+      display: flex; gap: 6px; align-items: center;
+    }
+    .view-btn {
+      background: var(--surface2); border: 1px solid var(--border);
+      color: var(--muted); padding: 5px 12px; border-radius: 6px;
+      cursor: pointer; font-size: 12px; font-weight: 600;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .view-btn.active {
+      background: var(--accent); border-color: var(--accent); color: #fff;
+    }
+    #treemap-container {
+      max-width: 900px; margin: 0 auto 28px;
+      display: none;
+    }
+    #treemap-container.show { display: block; }
+    #treemap {
+      display: flex; flex-wrap: wrap; gap: 0;
+      border-radius: 10px; overflow: hidden;
+    }
+    .tm-tile {
+      position: relative; overflow: hidden; cursor: pointer;
+      display: flex; flex-direction: column; justify-content: flex-end;
+      padding: 8px 10px; min-width: 60px; min-height: 64px;
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.2);
+      transition: filter 0.15s;
+    }
+    .tm-tile:hover { filter: brightness(1.2); z-index: 2; }
+    .tm-tile.up   { background: rgba(16,185,129,0.22); }
+    .tm-tile.down { background: rgba(239,68,68,0.20); }
+    .tm-tile.flat { background: var(--surface2); }
+    .tm-ticker { font-size: 14px; font-weight: 800; color: var(--text); }
+    .tm-chg    { font-size: 12px; font-weight: 700; margin-top: 2px; }
+    .tm-chg.up   { color: var(--green); }
+    .tm-chg.down { color: var(--red); }
+    .tm-chg.flat { color: var(--muted); }
+    .tm-price  { font-size: 10px; color: rgba(255,255,255,0.5); margin-top: 1px; }
+    .tm-wt     { font-size: 9px; color: rgba(255,255,255,0.35); }
+    }
+
     .etf-badge {
       background: var(--accent);
       color: #fff;
@@ -667,6 +722,10 @@
       <span id="status-text">–</span>
     </div>
     <span id="last-updated"></span>
+    <div id="view-toggle">
+      <button class="view-btn active" id="btn-cards"    onclick="setView('cards')">Cards</button>
+      <button class="view-btn"        id="btn-treemap"  onclick="setView('treemap')">Treemap</button>
+    </div>
     <button class="settings-btn" onclick="openSettings()" title="Configure API key for live data">⚙</button>
     <button id="refresh-btn" onclick="loadData()">
       <div class="spinner" id="spinner" role="status" aria-live="polite" aria-label="Loading data"></div>
@@ -712,6 +771,10 @@
     <span class="summary-label">Worst AH</span>
     <span class="summary-value" id="sum-worst" style="color:var(--red)">–</span>
   </div>
+</div>
+
+<div id="treemap-container">
+  <div id="treemap"></div>
 </div>
 
 <div class="cards-grid" id="grid"></div>
@@ -957,6 +1020,7 @@
         ${extRow('After Hours', ahPrice,  ahChange,  ahChangePct,  'No after-hours data', q.postMarketSource)}
         ${extRow('Pre-Market',  prePrice, preChange, preChangePct, 'Pre-market trading has not started')}
       </div>
+      ${buildSparkline(h.ticker, regDir)}
       ${weightSection}
       ${rangeSection}`;
   }
@@ -1273,6 +1337,16 @@
         const postChange = postPrice != null ? postPrice - meta.regularMarketPrice : null;
         const preChange  = prePrice  != null ? prePrice  - meta.regularMarketPrice : null;
 
+        // Store intraday closes for sparklines (regular-session candles only, max 80 pts)
+        const regStart = meta.tradingPeriods?.regular?.[0]?.[0]?.start ?? 0;
+        const sparkPts = [];
+        for (let j = 0; j < ts.length; j++) {
+          if (ts[j] >= regStart && closes[j] != null) sparkPts.push(closes[j]);
+        }
+        sparkCache[h.ticker] = sparkPts.length > 2
+          ? sparkPts.filter((_, i) => i % Math.ceil(sparkPts.length / 80) === 0)
+          : null;
+
         return {
           symbol: h.ticker,
           regularMarketPrice: meta.regularMarketPrice,
@@ -1395,6 +1469,69 @@
       </li>`).join('');
   }
 
+  // ── VIEW TOGGLE ───────────────────────────────────────────────────────────
+  function setView(v) {
+    currentView = v;
+    document.getElementById('grid').style.display           = v === 'cards'   ? '' : 'none';
+    document.getElementById('treemap-container').classList.toggle('show', v === 'treemap');
+    document.getElementById('btn-cards').classList.toggle('active',   v === 'cards');
+    document.getElementById('btn-treemap').classList.toggle('active', v === 'treemap');
+    if (v === 'treemap') buildTreemap();
+  }
+
+  // ── SPARKLINE ─────────────────────────────────────────────────────────────
+  function buildSparkline(ticker, dir) {
+    const pts = sparkCache[ticker];
+    if (!pts || pts.length < 3) return '';
+    const W = 200, H = 38, pad = 2;
+    const min = Math.min(...pts);
+    const max = Math.max(...pts);
+    const range = max - min || 1;
+    const xs = pts.map((_, i) => pad + (i / (pts.length - 1)) * (W - pad * 2));
+    const ys = pts.map(p => H - pad - ((p - min) / range) * (H - pad * 2));
+    const d  = xs.map((x, i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${ys[i].toFixed(1)}`).join(' ');
+    const fill = `${d} L${(W - pad).toFixed(1)},${H} L${pad},${H} Z`;
+    return `<div class="spark-wrap">
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        <path class="spark-fill ${dir}" d="${fill}"/>
+        <path class="spark-line ${dir}" d="${d}"/>
+      </svg>
+    </div>`;
+  }
+
+  // ── TREEMAP ───────────────────────────────────────────────────────────────
+  function buildTreemap() {
+    const el = document.getElementById('treemap');
+    if (!el) return;
+    const totalW = ALL_ITEMS.filter(h => !h.kr).reduce((s, h) => s + (h.weight || 2), 0);
+    const maxW   = Math.max(...ALL_ITEMS.filter(h => !h.kr).map(h => h.weight || 2));
+    let html = '';
+    ALL_ITEMS.forEach(h => {
+      if (h.kr) return; // KRX tiles omitted from treemap (no ETF weight)
+      const w   = h.weight || (h.etf ? 2 : 1);
+      const pct = (w / totalW * 100).toFixed(1);
+      const ht  = Math.max(70, Math.round(w / maxW * 180));
+      const d   = priceState[h.ticker] || {};
+      const chg = d.postMarketChangePercent ?? d.preMarketChangePercent ?? d.regularMarketChangePercent;
+      const px  = d.postMarketPrice || d.preMarketPrice || d.regularMarketPrice;
+      const dir = chg == null ? 'flat' : chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
+      const sign = chg > 0 ? '+' : '';
+      const arrow = chg > 0 ? '▲' : chg < 0 ? '▼' : '';
+      const chgStr = chg != null ? `${arrow} ${sign}${chg.toFixed(2)}%` : '–';
+      const pxStr  = px  != null ? (h.kr ? '₩' + Math.round(px).toLocaleString() : '$' + px.toFixed(2)) : '–';
+      html += `<div class="tm-tile ${dir}" style="flex:${w} 0 ${Math.max(7, pct * 0.75)}%;height:${ht}px"
+        title="${h.name} · ${pxStr}">
+        <div class="tm-ticker">${h.ticker}</div>
+        <div class="tm-price">${pxStr}</div>
+        <div class="tm-chg ${dir}">${chgStr}</div>
+        ${w >= 4 ? `<div class="tm-wt">${w.toFixed(1)}% of SMH</div>` : ''}
+      </div>`;
+    });
+    el.innerHTML = html;
+  }
+
+  const priceState = {};  // latest full quote per ticker for treemap updates
+
   async function loadData() {
     const btn       = document.getElementById('refresh-btn');
     const spinner   = document.getElementById('spinner');
@@ -1481,11 +1618,16 @@
       const map = {};
       results.forEach(q => { map[q.symbol] = q; });
 
+      // Keep priceState up-to-date for treemap
+      results.forEach(q => { priceState[q.symbol] = q; });
+
       const allQuotes = [];
       ALL_ITEMS.forEach((h, i) => {
         const q = map[h.ticker];
         if (q) { renderCard(h, i, q); allQuotes.push(q); }
       });
+
+      if (currentView === 'treemap') buildTreemap();
 
       updateSummary(allQuotes);
       document.getElementById('last-updated').textContent =
@@ -1505,8 +1647,10 @@
   // ── Yahoo Finance WebSocket streamer ────────────────────────────────────────
   // Connects to the same real-time feed used by finance.yahoo.com — no proxy,
   // no CORS issues, no caching. Messages are protobuf-encoded binary frames.
-  const liveQuotes = {};   // keyed by ticker; holds latest extended-hours data
+  const liveQuotes  = {};   // keyed by ticker; holds latest extended-hours data
+  const sparkCache  = {};   // keyed by ticker; intraday close array for sparklines
   let   streamerWs  = null;
+  let   currentView = 'cards';  // 'cards' | 'treemap'
 
   // Minimal protobuf decoder for Yahoo Finance PricingData schema
   function decodeYahooProto(data) {
